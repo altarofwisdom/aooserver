@@ -58,6 +58,7 @@ target_compile_definitions(aooserver PRIVATE
     JUCE_DIRECTSOUND=0
     JUCE_ALSA=0
     JUCE_STRICT_REFCOUNTEDPOINTER=1
+    JUCE_USE_CURL=0
 )
 
 target_link_libraries(aooserver PRIVATE
