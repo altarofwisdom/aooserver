@@ -16,13 +16,13 @@ jobs:
       matrix:
         include:
           - name: macOS
-            os: macos-13
-          - name: Linux
-            os: ubuntu-22.04
-          - name: Windows
-            os: windows-2022
+            os: macos-14
 
     steps:
+    - name: Select Xcode 15.4
+      if: runner.os == 'macOS'
+      run: sudo xcode-select -s /Applications/Xcode_15.4.app
+
     - name: Checkout aooserver
       uses: actions/checkout@v4
       with:
