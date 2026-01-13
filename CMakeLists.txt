@@ -73,4 +73,6 @@ target_link_libraries(aooserver PRIVATE
 
 if(WIN32)
     target_link_libraries(aooserver PRIVATE ws2_32)
+elseif(APPLE)
+    target_compile_definitions(aooserver PRIVATE __APPLE_USE_RFC_3542)
 endif()
