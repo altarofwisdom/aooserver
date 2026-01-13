@@ -10,7 +10,7 @@ include(FetchContent)
 FetchContent_Declare(
     juce
     GIT_REPOSITORY https://github.com/juce-framework/JUCE.git
-    GIT_TAG        7.0.9 # Using a stable JUCE 7 release
+    GIT_TAG        7.0.8 # Using JUCE 7.0.8 to match generated files
 )
 FetchContent_MakeAvailable(juce)
 
