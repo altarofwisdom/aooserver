@@ -1,0 +1,15 @@
+# Build directories
+build/
+Builds/
+cmake-build-*/
+juce-build/
+
+# IDE/System files
+.DS_Store
+.vscode/
+.idea/
+*.jucer
+*.user
+*.suo
+*.opensdf
+*.sdf
