@@ -11,7 +11,12 @@
 #include "../JuceLibraryCode/JuceHeader.h"
 
 #include "aoo/aoo_net.hpp"
-#include <unistd.h>
+
+#ifdef _WIN32
+ #include <windows.h>
+#else
+ #include <unistd.h>
+#endif
 
 #include <iostream>
 #include <signal.h>
@@ -333,6 +338,22 @@ void AooServerThread::run()  {
 static bool keyboardBreakOccurred = false;
 
 //==============================================================================
+#ifdef _WIN32
+static BOOL WINAPI keyboardBreakSignalHandler(DWORD ctrlType)
+{
+    if (ctrlType == CTRL_C_EVENT || ctrlType == CTRL_BREAK_EVENT) {
+        keyboardBreakOccurred = true;
+        DBG("KEYBOARD BREAK!");
+        return TRUE;
+    }
+    return FALSE;
+}
+
+static void installKeyboardBreakHandler()
+{
+    SetConsoleCtrlHandler(keyboardBreakSignalHandler, TRUE);
+}
+#else
 static void keyboardBreakSignalHandler (int sig)
 {
     if (sig == SIGINT) {
@@ -351,6 +372,7 @@ static void installKeyboardBreakHandler()
     saction.sa_flags = 0;
     sigaction (SIGINT, &saction, 0);
 }
+#endif
 
 #if 1
 class AooServerApplication : public JUCEApplicationBase, public Timer

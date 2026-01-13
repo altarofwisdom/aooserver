@@ -222,9 +222,15 @@ AOO_API int32_t aoonet_client_run(aoonet_client *server);
 // quit the AOO client from another thread
 AOO_API int32_t aoonet_client_quit(aoonet_client *server);
 
+// IP stack preference for connections
+#define AOONET_IPSTACK_DEFAULT 0
+#define AOONET_IPSTACK_PREFER_IPV4 1
+#define AOONET_IPSTACK_PREFER_IPV6 2
+
 // connect AOO client to a AOO server (always thread safe)
+// ip_stack_pref: 0=default, 1=prefer IPv4, 2=prefer IPv6
 AOO_API int32_t aoonet_client_connect(aoonet_client *client, const char *host, int port,
-                                      const char *username, const char *pwd);
+                                      const char *username, const char *pwd, int ip_stack_pref);
 
 // disconnect AOO client from AOO server (always thread safe)
 AOO_API int32_t aoonet_client_disconnect(aoonet_client *client);

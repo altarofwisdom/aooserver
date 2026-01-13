@@ -34,12 +34,14 @@ using group_list = std::vector<std::shared_ptr<group>>;
 class client_endpoint {
     server *server_;
 public:
-    client_endpoint(server &s, int sock, const ip_address& addr);
+    client_endpoint(server &s, int sock, const ip_address& addr, const ip_address& local_addr);
     ~client_endpoint();
 
     void close(bool notify=true);
 
     bool is_active() const { return socket >= 0; }
+
+    const ip_address& get_remote_address() const { return addr_; }
 
     void send_message(const char *msg, int32_t);
 
@@ -51,6 +53,7 @@ public:
 #endif
     ip_address public_address;
     ip_address local_address;
+    ip_address server_local_address;
     int64_t token;
 private:
     std::shared_ptr<user> user_;
@@ -231,6 +234,9 @@ private:
 
     void send_udp_message(const char *msg, int32_t size,
                           const ip_address& addr);
+
+    void send_udp_message(const char *msg, int32_t size,
+                          const ip_address& addr, const ip_address& source_addr);
 
     void handle_udp_message(const osc::ReceivedMessage& msg, int onset,
                             const ip_address& addr);

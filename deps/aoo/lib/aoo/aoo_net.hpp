@@ -7,6 +7,7 @@
 #include "aoo_net.h"
 
 #include <memory>
+#include <string>
 
 namespace aoo {
 namespace net {
@@ -115,8 +116,10 @@ public:
     virtual int32_t quit() = 0;
 
     // connect AOO client to a AOO server (always thread safe)
+    // ip_stack_pref: 0=default, 1=prefer IPv4, 2=prefer IPv6
     virtual int32_t connect(const char *host, int port,
-                            const char *username, const char *pwd) = 0;
+                            const char *username, const char *pwd,
+                            int ip_stack_pref = 0) = 0;
 
     // disconnect AOO client from AOO server (always thread safe)
     virtual int32_t disconnect() = 0;

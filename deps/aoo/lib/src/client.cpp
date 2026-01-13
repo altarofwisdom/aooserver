@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <sstream>
 #include <random>
+#include <vector>
 
 #include "md5/md5.h"
 
@@ -98,8 +99,11 @@ void * copy_sockaddr(const void * sa){
             auto result = new char[sizeof(sockaddr_in)];
             memcpy(result, sa, sizeof(sockaddr_in));
             return result;
+        } else if (static_cast<const sockaddr *>(sa)->sa_family == AF_INET6) {
+            auto result = new char[sizeof(sockaddr_in6)];
+            memcpy(result, sa, sizeof(sockaddr_in6));
+            return result;
         } else {
-            // LATER IPv6
             return nullptr;
         }
     } else {
@@ -256,13 +260,14 @@ int32_t aoo::net::client::quit(){
 }
 
 int32_t aoonet_client_connect(aoonet_client *client, const char *host, int port,
-                           const char *username, const char *pwd)
+                           const char *username, const char *pwd, int ip_stack_pref)
 {
-    return client->connect(host, port, username, pwd);
+    return client->connect(host, port, username, pwd, ip_stack_pref);
 }
 
 int32_t aoo::net::client::connect(const char *host, int port,
-                             const char *username, const char *pwd)
+                             const char *username, const char *pwd,
+                             int ip_stack_pref)
 {
     auto state = state_.load();
     if (state != client_state::disconnected){
@@ -279,7 +284,7 @@ int32_t aoo::net::client::connect(const char *host, int port,
 
     state_ = client_state::connecting;
 
-    push_command(std::make_unique<connect_cmd>(host, port));
+    push_command(std::make_unique<connect_cmd>(host, port, ip_stack_pref));
 
     signal();
 
@@ -351,7 +356,8 @@ int32_t aoonet_client_handle_message(aoonet_client *client, const char *data,
 }
 
 int32_t aoo::net::client::handle_message(const char *data, int32_t n, void *addr){
-    if (static_cast<struct sockaddr *>(addr)->sa_family != AF_INET){
+    auto family = static_cast<struct sockaddr *>(addr)->sa_family;
+    if (family != AF_INET && family != AF_INET6){
         return 0;
     }
     try {
@@ -365,7 +371,8 @@ int32_t aoo::net::client::handle_message(const char *data, int32_t n, void *addr
             return 0;
         }
 
-        ip_address address((struct sockaddr *)addr, sizeof(sockaddr_in)); // FIXME
+        socklen_t addrlen = (family == AF_INET6) ? sizeof(sockaddr_in6) : sizeof(sockaddr_in);
+        ip_address address((struct sockaddr *)addr, addrlen);
 
         LOG_DEBUG("aoo_client: handle UDP message " << msg.AddressPattern()
             << " from " << address.name() << ":" << address.port());
@@ -532,14 +539,14 @@ int32_t aoo::net::client::handle_events(aoo_eventhandler fn, void *user){
 namespace aoo {
 namespace net {
 
-void client::do_connect(const std::string &host, int port)
+void client::do_connect(const std::string &host, int port, int ip_stack_pref)
 {
     if (tcpsocket_ >= 0){
         LOG_ERROR("aoo_client: bug client::do_connect()");
         return;
     }
 
-    int err = try_connect(host, port);
+    int err = try_connect(host, port, ip_stack_pref);
     if (err != 0){
         // event
         std::string errmsg = socket_strerror(err);
@@ -600,46 +607,88 @@ void client::do_disconnect(command_reason reason, int error){
     state_ = client_state::disconnected;
 }
 
-int client::try_connect(const std::string &host, int port){
-    tcpsocket_ = socket(AF_INET, SOCK_STREAM, 0);
-    if (tcpsocket_ < 0){
+int client::try_connect(const std::string &host, int port, int ip_stack_pref){
+    // Use getaddrinfo to resolve host name (supports both IPv4 and IPv6)
+    struct addrinfo hints, *res = nullptr;
+    memset(&hints, 0, sizeof(hints));
+    hints.ai_family = AF_UNSPEC;  // Allow IPv4 or IPv6
+    hints.ai_socktype = SOCK_STREAM;
+
+    char port_str[16];
+    snprintf(port_str, sizeof(port_str), "%d", port);
+
+    int gai_err = getaddrinfo(host.c_str(), port_str, &hints, &res);
+    if (gai_err != 0 || res == nullptr){
         int err = socket_errno();
-        LOG_ERROR("aoo_client: couldn't create socket (" << err << ")");
-        return err;
-    }
-    // resolve host name
-    struct hostent *he = gethostbyname(host.c_str());
-    if (!he){
-        int err = socket_errno();
-        LOG_ERROR("aoo_client: couldn't connect (" << err << ")");
-        return err;
-    }
-
-    // copy IP address
-    struct sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_port = htons(port);
-    memcpy(&sa.sin_addr, he->h_addr_list[0], he->h_length);
-
-    remote_addr_ = ip_address((struct sockaddr *)&sa, sizeof(sa));
-
-    // set TCP_NODELAY
-    int val = 1;
-    if (setsockopt(tcpsocket_, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val)) < 0){
-        LOG_WARNING("aoo_client: couldn't set TCP_NODELAY");
-        // ignore
+        LOG_ERROR("aoo_client: couldn't resolve host (" << gai_err << ")");
+        return err ? err : -1;
     }
 
-    // try to connect (LATER make timeout configurable)
-    if (socket_connect(tcpsocket_, remote_addr_, 5) < 0){
-        int err = socket_errno();
-        LOG_ERROR("aoo_client: couldn't connect (" << err << ")");
-        return err;
+    // Reorder addresses based on ip_stack_pref
+    // 0 = default (try in order returned), 1 = prefer IPv4, 2 = prefer IPv6
+    std::vector<struct addrinfo*> addr_list;
+    for (struct addrinfo *rp = res; rp != nullptr; rp = rp->ai_next) {
+        addr_list.push_back(rp);
+    }
+
+    if (ip_stack_pref == 1) {
+        // Prefer IPv4: sort IPv4 addresses first
+        std::stable_sort(addr_list.begin(), addr_list.end(),
+            [](struct addrinfo* a, struct addrinfo* b) {
+                return (a->ai_family == AF_INET) && (b->ai_family != AF_INET);
+            });
+    } else if (ip_stack_pref == 2) {
+        // Prefer IPv6: sort IPv6 addresses first
+        std::stable_sort(addr_list.begin(), addr_list.end(),
+            [](struct addrinfo* a, struct addrinfo* b) {
+                return (a->ai_family == AF_INET6) && (b->ai_family != AF_INET6);
+            });
+    }
+
+    // Try each address until we successfully connect
+    int last_err = 0;
+    bool connected = false;
+    for (struct addrinfo *rp : addr_list) {
+        tcpsocket_ = socket(rp->ai_family, rp->ai_socktype, rp->ai_protocol);
+        if (tcpsocket_ < 0){
+            last_err = socket_errno();
+            continue;
+        }
+
+        remote_addr_ = ip_address((struct sockaddr *)rp->ai_addr, (socklen_t)rp->ai_addrlen);
+
+        LOG_VERBOSE("aoo_client: trying to connect to " << remote_addr_.name()
+            << ":" << remote_addr_.port() << " (family=" << rp->ai_family << ")");
+
+        // set TCP_NODELAY
+        int val = 1;
+        if (setsockopt(tcpsocket_, IPPROTO_TCP, TCP_NODELAY, (char *)&val, sizeof(val)) < 0){
+            LOG_WARNING("aoo_client: couldn't set TCP_NODELAY");
+            // ignore
+        }
+
+        // try to connect (LATER make timeout configurable)
+        if (socket_connect(tcpsocket_, remote_addr_, 5) < 0){
+            last_err = socket_errno();
+            socket_close(tcpsocket_);
+            tcpsocket_ = -1;
+            continue;
+        }
+
+        connected = true;
+        break;
+    }
+
+    freeaddrinfo(res);
+
+    if (!connected) {
+        LOG_ERROR("aoo_client: couldn't connect (" << last_err << ")");
+        return last_err ? last_err : -1;
     }
 
     // get local network interface
     ip_address tmp;
+    tmp.length = sizeof(tmp.address);
     if (getsockname(tcpsocket_,
                     (struct sockaddr *)&tmp.address, &tmp.length) < 0) {
         int err = socket_errno();
@@ -654,7 +703,7 @@ int client::try_connect(const std::string &host, int port){
 #else
     // set non-blocking
     // (this is not necessary on Windows, since WSAEventSelect will do it automatically)
-    val = 1;
+    int val = 1;
     if (ioctl(tcpsocket_, FIONBIO, (char *)&val) < 0){
         int err = socket_errno();
         LOG_ERROR("aoo_client: couldn't set socket to non-blocking (" << err << ")");

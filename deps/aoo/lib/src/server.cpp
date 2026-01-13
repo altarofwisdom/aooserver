@@ -8,6 +8,10 @@
 #include <algorithm>
 #include <random>
 
+#ifdef _WIN32
+#include <mswsock.h>
+#endif
+
 #define AOONET_MSG_CLIENT_PING \
     AOO_MSG_DOMAIN AOONET_MSG_CLIENT AOONET_MSG_PING
 
@@ -62,19 +66,50 @@ char * copy_string(const char * s);
 aoonet_server * aoonet_server_new(int port, int32_t *err) {
     int val = 0;
 
-    // make 'any' address
-    sockaddr_in sa;
-    memset(&sa, 0, sizeof(sa));
-    sa.sin_family = AF_INET;
-    sa.sin_addr.s_addr = INADDR_ANY;
-    sa.sin_port = htons(port);
+    // Try IPv6 dual-stack first, fall back to IPv4
+    bool use_ipv6 = true;
 
-    // create and bind UDP socket
-    int udpsocket = socket(AF_INET, SOCK_DGRAM, 0);
+    // make 'any' address for IPv6 dual-stack
+    sockaddr_in6 sa6;
+    memset(&sa6, 0, sizeof(sa6));
+    sa6.sin6_family = AF_INET6;
+    sa6.sin6_addr = in6addr_any;
+    sa6.sin6_port = htons(port);
+
+    // IPv4 fallback address
+    sockaddr_in sa4;
+    memset(&sa4, 0, sizeof(sa4));
+    sa4.sin_family = AF_INET;
+    sa4.sin_addr.s_addr = INADDR_ANY;
+    sa4.sin_port = htons(port);
+
+    // create UDP socket - try IPv6 first
+    int udpsocket = socket(AF_INET6, SOCK_DGRAM, 0);
     if (udpsocket < 0){
-        *err = aoo::net::socket_errno();
-        LOG_ERROR("aoo_server: couldn't create UDP socket (" << *err << ")");
-        return nullptr;
+        // Fall back to IPv4
+        use_ipv6 = false;
+        udpsocket = socket(AF_INET, SOCK_DGRAM, 0);
+        if (udpsocket < 0){
+            *err = aoo::net::socket_errno();
+            LOG_ERROR("aoo_server: couldn't create UDP socket (" << *err << ")");
+            return nullptr;
+        }
+    }
+
+    if (use_ipv6) {
+        // Enable dual-stack (accept both IPv4 and IPv6)
+        val = 0;
+        if (setsockopt(udpsocket, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&val, sizeof(val)) < 0){
+            LOG_WARNING("aoo_server: couldn't disable IPV6_V6ONLY for UDP, falling back to IPv4");
+            aoo::net::socket_close(udpsocket);
+            use_ipv6 = false;
+            udpsocket = socket(AF_INET, SOCK_DGRAM, 0);
+            if (udpsocket < 0){
+                *err = aoo::net::socket_errno();
+                LOG_ERROR("aoo_server: couldn't create UDP socket (" << *err << ")");
+                return nullptr;
+            }
+        }
     }
 
     // set non-blocking
@@ -89,20 +124,38 @@ aoonet_server * aoonet_server_new(int port, int32_t *err) {
     }
 #endif
 
-    if (bind(udpsocket, (sockaddr *)&sa, sizeof(sa)) < 0){
-        *err = aoo::net::socket_errno();
-        LOG_ERROR("aoo_server: couldn't bind UDP socket (" << *err << ")");
-        aoo::net::socket_close(udpsocket);
-        return nullptr;
+    if (use_ipv6) {
+        if (bind(udpsocket, (sockaddr *)&sa6, sizeof(sa6)) < 0){
+            *err = aoo::net::socket_errno();
+            LOG_ERROR("aoo_server: couldn't bind UDP socket to IPv6 (" << *err << ")");
+            aoo::net::socket_close(udpsocket);
+            return nullptr;
+        }
+    } else {
+        if (bind(udpsocket, (sockaddr *)&sa4, sizeof(sa4)) < 0){
+            *err = aoo::net::socket_errno();
+            LOG_ERROR("aoo_server: couldn't bind UDP socket (" << *err << ")");
+            aoo::net::socket_close(udpsocket);
+            return nullptr;
+        }
     }
 
     // create TCP socket
-    int tcpsocket = socket(AF_INET, SOCK_STREAM, 0);
+    int tcpsocket = use_ipv6 ? socket(AF_INET6, SOCK_STREAM, 0) : socket(AF_INET, SOCK_STREAM, 0);
     if (tcpsocket < 0){
         *err = aoo::net::socket_errno();
         LOG_ERROR("aoo_server: couldn't create TCP socket (" << *err << ")");
         aoo::net::socket_close(udpsocket);
         return nullptr;
+    }
+
+    if (use_ipv6) {
+        // Enable dual-stack for TCP
+        val = 0;
+        if (setsockopt(tcpsocket, IPPROTO_IPV6, IPV6_V6ONLY, (char *)&val, sizeof(val)) < 0){
+            LOG_WARNING("aoo_server: couldn't disable IPV6_V6ONLY for TCP");
+            // continue anyway
+        }
     }
 
     // set SO_REUSEADDR
@@ -138,12 +191,22 @@ aoonet_server * aoonet_server_new(int port, int32_t *err) {
 #endif
 
     // bind TCP socket
-    if (bind(tcpsocket, (sockaddr *)&sa, sizeof(sa)) < 0){
-        *err = aoo::net::socket_errno();
-        LOG_ERROR("aoo_server: couldn't bind TCP socket (" << *err << ")");
-        aoo::net::socket_close(tcpsocket);
-        aoo::net::socket_close(udpsocket);
-        return nullptr;
+    if (use_ipv6) {
+        if (bind(tcpsocket, (sockaddr *)&sa6, sizeof(sa6)) < 0){
+            *err = aoo::net::socket_errno();
+            LOG_ERROR("aoo_server: couldn't bind TCP socket to IPv6 (" << *err << ")");
+            aoo::net::socket_close(tcpsocket);
+            aoo::net::socket_close(udpsocket);
+            return nullptr;
+        }
+    } else {
+        if (bind(tcpsocket, (sockaddr *)&sa4, sizeof(sa4)) < 0){
+            *err = aoo::net::socket_errno();
+            LOG_ERROR("aoo_server: couldn't bind TCP socket (" << *err << ")");
+            aoo::net::socket_close(tcpsocket);
+            aoo::net::socket_close(udpsocket);
+            return nullptr;
+        }
     }
 
     // listen
@@ -154,6 +217,8 @@ aoonet_server * aoonet_server_new(int port, int32_t *err) {
         aoo::net::socket_close(udpsocket);
         return nullptr;
     }
+
+    LOG_VERBOSE("aoo_server: started with " << (use_ipv6 ? "IPv6 dual-stack" : "IPv4"));
 
     return new aoo::net::server(tcpsocket, udpsocket);
 }
@@ -593,7 +658,15 @@ void server::wait_for_event(){
                 if (sock != INVALID_SOCKET){
                     // check block list and refuse connection from blocked addresses
                     if (!is_address_blocked(addr)) {
-                        clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr));
+                        ip_address local_addr;
+                        if (getsockname(sock, (struct sockaddr *)&local_addr.address, &local_addr.length) != 0) {
+                            LOG_ERROR("aoo_server: getsockname failed (" << socket_errno() << ")");
+                        } else {
+                            // If it's an IPv4-mapped IPv6 address, convert to IPv4? 
+                            // Usually better to keep as is if socket is dual stack.
+                        }
+                        
+                        clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr, local_addr));
                         LOG_VERBOSE("aoo_server: accepted client (IP: "
                                     << addr.name() << ", port: " << addr.port() << ")");
                     }
@@ -693,7 +766,12 @@ void server::wait_for_event(){
             int sock = accept(tcpsocket_, (struct sockaddr *)&addr.address, &addr.length);
             if (sock >= 0){
                 if (!is_address_blocked(addr)) {
-                    clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr));
+                    ip_address local_addr;
+                    if (getsockname(sock, (struct sockaddr *)&local_addr.address, &local_addr.length) != 0) {
+                        LOG_ERROR("aoo_server: getsockname failed (" << socket_errno() << ")");
+                    }
+
+                    clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr, local_addr));
                     LOG_VERBOSE("aoo_server: accepted client (IP: "
                                 << addr.name() << ", port: " << addr.port() << ")");
                 } else {
@@ -835,6 +913,118 @@ void server::send_udp_message(const char *msg, int32_t size,
     }
 }
 
+void server::send_udp_message(const char *msg, int32_t size,
+                              const ip_address &addr, const ip_address& source_addr)
+{
+    if (source_addr.length == 0) {
+        send_udp_message(msg, size, addr);
+        return;
+    }
+
+#ifdef _WIN32
+    static LPFN_WSASENDMSG fp_WSASendMsg = NULL;
+    if (!fp_WSASendMsg) {
+        GUID guid = WSAID_WSASENDMSG;
+        DWORD bytes = 0;
+        WSAIoctl(udpsocket_, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
+                 &fp_WSASendMsg, sizeof(fp_WSASendMsg), &bytes, NULL, NULL);
+    }
+
+    if (!fp_WSASendMsg) {
+        LOG_ERROR("aoo_server: couldn't get WSASendMsg extension function");
+        send_udp_message(msg, size, addr);
+        return;
+    }
+
+    WSABUF wsaBuf;
+    wsaBuf.buf = (char *)msg;
+    wsaBuf.len = size;
+
+    WSAMSG wsaMsg;
+    memset(&wsaMsg, 0, sizeof(wsaMsg));
+    wsaMsg.name = (LPSOCKADDR)&addr.address;
+    wsaMsg.namelen = addr.length;
+    wsaMsg.lpBuffers = &wsaBuf;
+    wsaMsg.dwBufferCount = 1;
+
+    char controlBuf[1024];
+    wsaMsg.Control.buf = controlBuf;
+    wsaMsg.Control.len = sizeof(controlBuf);
+
+    WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
+
+    cmsg->cmsg_level = IPPROTO_IPV6;
+    cmsg->cmsg_type = IPV6_PKTINFO;
+    cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
+
+    IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
+    
+    // Assume IPv6 dual stack
+    if (source_addr.family() == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&source_addr.address;
+        pktinfo->ipi6_addr = sin6->sin6_addr;
+    } else {
+        // Map IPv4 to IPv6
+        ip_address mapped = source_addr.to_ipv6_mapped();
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&mapped.address;
+        pktinfo->ipi6_addr = sin6->sin6_addr;
+    }
+    pktinfo->ipi6_ifindex = 0;
+
+    wsaMsg.Control.len = cmsg->cmsg_len;
+
+    DWORD bytesSent;
+    if (fp_WSASendMsg(udpsocket_, &wsaMsg, 0, &bytesSent, NULL, NULL) == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err != WSAEWOULDBLOCK) {
+            LOG_ERROR("aoo_server: WSASendMsg failed (" << err << ")");
+        }
+    }
+#else
+    struct msghdr message;
+    struct iovec iov[1];
+    struct cmsghdr *cmsg;
+    char cmsgbuf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
+
+    iov[0].iov_base = (void *)msg;
+    iov[0].iov_len = size;
+
+    memset(&message, 0, sizeof(message));
+    message.msg_name = (void *)&addr.address;
+    message.msg_namelen = addr.length;
+    message.msg_iov = iov;
+    message.msg_iovlen = 1;
+    message.msg_control = cmsgbuf;
+    message.msg_controllen = sizeof(cmsgbuf);
+
+    cmsg = CMSG_FIRSTHDR(&message);
+    cmsg->cmsg_level = IPPROTO_IPV6;
+    cmsg->cmsg_type = IPV6_PKTINFO;
+    cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
+
+    struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
+    
+    if (source_addr.family() == AF_INET6) {
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&source_addr.address;
+        pktinfo->ipi6_addr = sin6->sin6_addr;
+    } else {
+        ip_address mapped = source_addr.to_ipv6_mapped(); 
+        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&mapped.address;
+        pktinfo->ipi6_addr = sin6->sin6_addr;
+    }
+    pktinfo->ipi6_ifindex = 0;
+
+    message.msg_controllen = cmsg->cmsg_len;
+
+    if (sendmsg(udpsocket_, &message, 0) < 0) {
+        int err = socket_errno();
+        if (err != EWOULDBLOCK) {
+             LOG_ERROR("aoo_server: sendmsg failed (" << err << ")");
+        }
+    }
+#endif
+}
+
 void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
                                 const ip_address& addr)
 {
@@ -857,7 +1047,16 @@ void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
             reply << osc::BeginMessage(AOONET_MSG_CLIENT_REPLY)
                   << addr.name().c_str() << addr.port() << osc::EndMessage;
 
-            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr);
+            ip_address source_addr;
+            // find client with same external IP
+            for (auto& c : clients_) {
+                if (c->get_remote_address().name() == addr.name()){
+                    source_addr = c->server_local_address;
+                    break;
+                }
+            }
+
+            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr, source_addr);
         } else {
             LOG_ERROR("aoo_server: unknown message " << pattern);
         }
@@ -941,8 +1140,8 @@ bool group::remove_user(const user& usr){
 
 /*///////////////////////// client_endpoint /////////////////////////////*/
 
-client_endpoint::client_endpoint(server &s, int sock, const ip_address &addr)
-    : server_(&s), socket(sock), addr_(addr)
+client_endpoint::client_endpoint(server &s, int sock, const ip_address &addr, const ip_address &local_addr)
+    : server_(&s), socket(sock), addr_(addr), server_local_address(local_addr)
 {
     int val = 0;
     // NOTE: on POSIX systems, the socket returned by accept() does *not*

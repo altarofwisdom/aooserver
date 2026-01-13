@@ -118,7 +118,8 @@ public:
     int32_t quit() override;
 
     int32_t connect(const char *host, int port,
-                    const char *username, const char *pwd) override;
+                    const char *username, const char *pwd,
+                    int ip_stack_pref = 0) override;
 
     int32_t disconnect() override;
 
@@ -137,9 +138,9 @@ public:
 
     int32_t handle_events(aoo_eventhandler fn, void *user) override;
 
-    void do_connect(const std::string& host, int port);
+    void do_connect(const std::string& host, int port, int ip_stack_pref);
 
-    int try_connect(const std::string& host, int port);
+    int try_connect(const std::string& host, int port, int ip_stack_pref);
 
     void do_disconnect(command_reason reason = command_reason::none, int error = 0);
 
@@ -275,14 +276,15 @@ public:
 private:
     struct connect_cmd : icommand
     {
-        connect_cmd(const std::string& _host, int _port)
-            : host(_host), port(_port){}
+        connect_cmd(const std::string& _host, int _port, int _ip_stack_pref = 0)
+            : host(_host), port(_port), ip_stack_pref(_ip_stack_pref){}
 
         void perform(client &obj) override {
-            obj.do_connect(host, port);
+            obj.do_connect(host, port, ip_stack_pref);
         }
         std::string host;
         int port;
+        int ip_stack_pref;
     };
 
     struct disconnect_cmd : icommand
