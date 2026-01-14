@@ -23,7 +23,9 @@ which you can copy to a system binary location of your choice
     aooserver -p|--port <server_port>   Specify the server port (default 10998)
 `aooserver -b|--blocklist filename   File containing IP addresses to block`
 
-The aooserver now supports IPv6, allowing for broader network connectivity. You can specify a different port than the default that the server uses (this
+The `aooserver` now fully supports IPv6, which significantly enhances its networking capabilities. This upgrade allows the server to operate seamlessly in modern network environments, offering improved address space and more efficient routing. Users can now utilize IPv6 addresses for both TCP and UDP connections, enabling broader network connectivity and compatibility.
+
+You can specify a different port than the default that the server uses (this
 is for both TCP and UDP). You can specify if timestamped log files should be
 created in a particular directory, otherwise logging will only go to the standard
 output (which it always does). The blocklist lets you specify a file containing IP addresses
