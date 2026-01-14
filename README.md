@@ -21,9 +21,9 @@ which you can copy to a system binary location of your choice
     aooserver -h|--help                 Prints the list of commands
     aooserver -l|--logdir logdirectory  Enables logging to file
     aooserver -p|--port <server_port>   Specify the server port (default 10998)
-    aooserver -b|--blocklist filename   File containing IP addresses to block
+`aooserver -b|--blocklist filename   File containing IP addresses to block`
 
-You can specify a different port than the default that the server uses (this
+The aooserver now supports IPv6, allowing for broader network connectivity. You can specify a different port than the default that the server uses (this
 is for both TCP and UDP). You can specify if timestamped log files should be
 created in a particular directory, otherwise logging will only go to the standard
 output (which it always does). The blocklist lets you specify a file containing IP addresses
