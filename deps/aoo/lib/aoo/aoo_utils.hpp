@@ -25,7 +25,14 @@
  #define LOGLEVEL 1
 #endif
 
-#define DO_LOG(x) do { std::cerr << x << std::endl; } while (false);
+#include <fstream>
+
+#define DO_LOG(x) do { \
+    std::ofstream outfile("Log.txt", std::ios_base::app); \
+    if (outfile.is_open()) { \
+        outfile << x << std::endl; \
+    } \
+} while (false)
 
 #if LOGLEVEL >= 0
  #define LOG_ERROR(x) DO_LOG(x)

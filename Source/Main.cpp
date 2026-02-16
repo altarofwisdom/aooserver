@@ -119,6 +119,37 @@ public:
         logEvent(msg);
         
         if (mServer) {
+            Thread::launch([this]() {
+                auto fetchIP = [](const String& url) -> String {
+                    URL u(url);
+                    if (auto stream = u.createInputStream(URL::InputStreamOptions(URL::ParameterHandling::inAddress)
+                                                            .withConnectionTimeoutMs(3000)
+                                                            .withNumRedirectsToFollow(2)))
+                    {
+                        return stream->readEntireStreamAsString().trim();
+                    }
+                    return {};
+                };
+
+                String v4wan = fetchIP("https://4.icanhazip.com");
+                if (v4wan.isEmpty()) v4wan = fetchIP("https://ifconfig.me/ip");
+                if (v4wan.isEmpty()) v4wan = fetchIP("https://api.ipify.org");
+
+                String v6wan = fetchIP("https://6.icanhazip.com");
+                if (v6wan.isEmpty()) v6wan = fetchIP("https://ifconfig.co/ip");
+
+                if (v4wan.isNotEmpty()) {
+                    String out; out << "WAN IPv4: " << v4wan;
+                    cerr << out << endl;
+                    logEvent(out);
+                }
+                if (v6wan.isNotEmpty()) {
+                    String out; out << "WAN IPv6: " << v6wan;
+                    cerr << out << endl;
+                    logEvent(out);
+                }
+            });
+
             mServerThread = std::make_unique<AooServerThread>(this);    
             mServerThread->startThread();
 

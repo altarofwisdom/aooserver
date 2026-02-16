@@ -850,6 +850,7 @@ void server::receive_udp(){
         int32_t result = recvfrom(udpsocket_, buf, sizeof(buf), 0,
                                (struct sockaddr *)&addr.address, &addr.length);
         if (result > 0){
+            LOG_WARNING("aoo_server: received UDP " << result << " bytes from " << addr.name() << ":" << addr.port());
             try {
                 osc::ReceivedPacket packet(buf, result);
                 osc::ReceivedMessage msg(packet);
@@ -895,6 +896,7 @@ void server::receive_udp(){
 void server::send_udp_message(const char *msg, int32_t size,
                               const ip_address &addr)
 {
+    LOG_DEBUG("aoo_server: sending UDP " << size << " bytes to " << addr.name() << ":" << addr.port());
     auto result = ::sendto(udpsocket_, msg, size, 0,
                           (struct sockaddr *)&addr.address, addr.length);
     if (result < 0){
@@ -1047,16 +1049,7 @@ void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
             reply << osc::BeginMessage(AOONET_MSG_CLIENT_REPLY)
                   << addr.name().c_str() << addr.port() << osc::EndMessage;
 
-            ip_address source_addr;
-            // find client with same external IP
-            for (auto& c : clients_) {
-                if (c->get_remote_address().name() == addr.name()){
-                    source_addr = c->server_local_address;
-                    break;
-                }
-            }
-
-            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr, source_addr);
+            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr);
         } else {
             LOG_ERROR("aoo_server: unknown message " << pattern);
         }
