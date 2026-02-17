@@ -515,7 +515,7 @@ int32_t aoo::net::client::send(){
             if (delta >= request_interval()){
                 char buf[64];
                 osc::OutboundPacketStream msg(buf, sizeof(buf));
-                msg << osc::BeginMessage(AOONET_MSG_SERVER_REQUEST) << osc::EndMessage;
+                msg << osc::BeginMessage(AOONET_MSG_SERVER_REQUEST) << token_ << osc::EndMessage;
 
                 send_server_message_udp(msg.Data(), (int32_t) msg.Size());
                 last_udp_ping_time_ = elapsed_time;

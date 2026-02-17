@@ -828,6 +828,41 @@ void server::update(){
     }
 }
 
+void server::remember_udp_request(int64_t token, const ip_address& source_addr,
+                                  const ip_address& local_dest_addr){
+    if (token <= 0){
+        return;
+    }
+
+    udp_request_info info;
+    info.source_addr = source_addr;
+    info.local_dest_addr = local_dest_addr;
+    info.seq = ++udp_request_seq_;
+    udp_requests_[token] = info;
+
+    // Keep memory bounded for long-running servers.
+    if (udp_requests_.size() > 4096){
+        auto oldest = udp_requests_.begin();
+        for (auto it = udp_requests_.begin(); it != udp_requests_.end(); ++it){
+            if (it->second.seq < oldest->second.seq){
+                oldest = it;
+            }
+        }
+        udp_requests_.erase(oldest);
+    }
+}
+
+bool server::lookup_udp_request(int64_t token, ip_address& source_addr,
+                                ip_address& local_dest_addr) const {
+    auto it = udp_requests_.find(token);
+    if (it == udp_requests_.end()){
+        return false;
+    }
+    source_addr = it->second.source_addr;
+    local_dest_addr = it->second.local_dest_addr;
+    return true;
+}
+
 void server::receive_udp(){
     if (udpsocket_ < 0){
         return;
@@ -1136,11 +1171,21 @@ void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
 
             send_udp_message(reply.Data(), (int32_t) reply.Size(), addr, local_addr);
         } else if (!strcmp(pattern, AOONET_MSG_REQUEST)){
+            int64_t token = 0;
+            if (msg.ArgumentCount() > 0){
+                token = msg.ArgumentsBegin()->AsInt64();
+            }
+            remember_udp_request(token, addr, local_addr);
+
             // reply with /reply message
             char buf[512];
             osc::OutboundPacketStream reply(buf, sizeof(buf));
             reply << osc::BeginMessage(AOONET_MSG_CLIENT_REPLY)
-                  << addr.name().c_str() << addr.port() << osc::EndMessage;
+                  << addr.name().c_str() << addr.port();
+            if (token > 0){
+                reply << token;
+            }
+            reply << osc::EndMessage;
 
             send_udp_message(reply.Data(), (int32_t) reply.Size(), addr, local_addr);
         } else {
@@ -1516,19 +1561,59 @@ void client_endpoint::handle_login(const osc::ReceivedMessage& msg)
         token = ctoken;
     }
 
+    ip_address reported_public(public_ip, public_port);
+    ip_address reported_local(local_ip, local_port);
+
     ip_address server_local_addr;
     server_local_addr.length = sizeof(server_local_addr.address);
     bool has_server_local_addr = getsockname(socket, (struct sockaddr *)&server_local_addr.address,
                                              &server_local_addr.length) == 0;
-    
+    bool public_matches_server = has_server_local_addr && (reported_public == server_local_addr);
+    bool local_matches_server = has_server_local_addr && (reported_local == server_local_addr);
+
+    ip_address hinted_public;
+    ip_address hinted_local;
+    bool have_udp_hint = token > 0 && server_->lookup_udp_request(token, hinted_public, hinted_local);
+
     server::error err;
     if (!user_){
         user_ = server_->get_user(username, password, err);
         if (user_){
+            bool login_ok = true;
             // success
-            public_address = ip_address(public_ip, public_port);
-            local_address = ip_address(local_ip, local_port);
-            user_->endpoint = this;
+            if (have_udp_hint){
+                if (!(reported_public == hinted_public)){
+                    LOG_WARNING("aoo_server: login UDP endpoint mismatch for user=" << username
+                                << " reported_public=" << format_ip_address_debug(reported_public)
+                                << " hinted_public=" << format_ip_address_debug(hinted_public)
+                                << " token=" << token);
+                }
+                public_address = hinted_public;
+            } else {
+                public_address = reported_public;
+            }
+
+            if (local_matches_server && have_udp_hint){
+                LOG_WARNING("aoo_server: replacing suspicious reported local endpoint with UDP hint for user=" << username
+                            << " reported_local=" << format_ip_address_debug(reported_local)
+                            << " hinted_public=" << format_ip_address_debug(hinted_public)
+                            << " token=" << token);
+                local_address = hinted_public;
+            } else {
+                local_address = reported_local;
+            }
+
+            if (!have_udp_hint && (public_matches_server || local_matches_server)){
+                errmsg = "invalid udp endpoint";
+                LOG_WARNING("aoo_server: rejecting login for user=" << username
+                            << " because reported endpoint matches server endpoint"
+                            << " tcp_remote=" << format_ip_address_debug(addr_)
+                            << " tcp_local=" << (has_server_local_addr ? format_ip_address_debug(server_local_addr) : std::string("<unknown>"))
+                            << " reported_public=" << format_ip_address_debug(reported_public)
+                            << " reported_local=" << format_ip_address_debug(reported_local)
+                            << " token=" << token);
+                login_ok = false;
+            }
 
             LOG_VERBOSE("aoo_server: login: "
                         << "username: " << username << ", password: " << password
@@ -1537,8 +1622,8 @@ void client_endpoint::handle_login(const osc::ReceivedMessage& msg)
             LOG_VERBOSE("aoo_server: login endpoint context user=" << username
                         << " tcp_remote=" << format_ip_address_debug(addr_)
                         << " tcp_local=" << (has_server_local_addr ? format_ip_address_debug(server_local_addr) : std::string("<unknown>"))
-                        << " reported_public=" << format_ip_address_debug(public_address)
-                        << " reported_local=" << format_ip_address_debug(local_address));
+                            << " reported_public=" << format_ip_address_debug(public_address)
+                            << " reported_local=" << format_ip_address_debug(local_address));
             if (has_server_local_addr && server_local_addr.port() > 0 &&
                 (public_port == server_local_addr.port() || local_port == server_local_addr.port())){
                 LOG_WARNING("aoo_server: suspicious login endpoints for user=" << username
@@ -1549,9 +1634,15 @@ void client_endpoint::handle_login(const osc::ReceivedMessage& msg)
                             << " token=" << token);
             }
 
-            result = 1;
-
-            server_->on_user_joined(*user_);
+            if (login_ok){
+                user_->endpoint = this;
+                result = 1;
+                server_->on_user_joined(*user_);
+            } else {
+                user_->endpoint = nullptr;
+                user_.reset();
+                result = 0;
+            }
         } else {
             errmsg = server::error_to_string(err);
         }

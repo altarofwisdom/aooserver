@@ -190,8 +190,18 @@ public:
     void on_public_group_modified(group& grp);
     void on_public_group_removed(group& grp);
 
+    void remember_udp_request(int64_t token, const ip_address& source_addr,
+                              const ip_address& local_dest_addr);
+    bool lookup_udp_request(int64_t token, ip_address& source_addr,
+                            ip_address& local_dest_addr) const;
 
 private:
+    struct udp_request_info {
+        ip_address source_addr;
+        ip_address local_dest_addr;
+        uint64_t seq = 0;
+    };
+
     socket_type tcpsocket_;
     socket_type udpsocket_;
 #ifdef _WIN32
@@ -201,6 +211,8 @@ private:
     std::vector<std::unique_ptr<client_endpoint>> clients_;
     user_list users_;
     group_list groups_;
+    std::unordered_map<int64_t, udp_request_info> udp_requests_;
+    uint64_t udp_request_seq_ = 0;
     // queues
     lockfree::queue<std::unique_ptr<icommand>> commands_;
     lockfree::queue<std::unique_ptr<ievent>> events_;
