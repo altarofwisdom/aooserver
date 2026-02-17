@@ -823,7 +823,7 @@ void server::receive_udp(){
                 addr.length = wsaMsg.namelen;
 
                 // Extract local destination address
-                for (WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg); cmsg != NULL; cmsg = WSA_CMSG_NXTHHDR(&wsaMsg, cmsg)) {
+                for (WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(&wsaMsg, cmsg)) {
                     if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
                         IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
                         struct sockaddr_in6 sa6;
@@ -975,7 +975,8 @@ void server::send_udp_message(const char *msg, int32_t size,
 
         char control[1024];
         wsaMsg.Control.buf = control;
-        wsaMsg.Control.len = 0;
+        wsaMsg.Control.len = sizeof(control);
+        memset(control, 0, sizeof(control));
 
         if (source_addr.family() == AF_INET6) {
             WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
@@ -1017,7 +1018,8 @@ void server::send_udp_message(const char *msg, int32_t size,
     message.msg_iov = iov;
     message.msg_iovlen = 1;
     message.msg_control = control;
-    message.msg_controllen = 0;
+    message.msg_controllen = sizeof(control);
+    memset(control, 0, sizeof(control));
 
     if (source_addr.family() == AF_INET6) {
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
