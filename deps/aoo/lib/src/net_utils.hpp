@@ -9,6 +9,8 @@ typedef int socklen_t;
 using socket_type = SOCKET;
 #else
 #include <sys/socket.h>
+#include <sys/types.h>
+#include <sys/uio.h>
 #include <sys/select.h>
 #include <poll.h>
 #include <unistd.h>
@@ -21,6 +23,19 @@ using socket_type = SOCKET;
 #include <arpa/inet.h>
 #include <errno.h>
 using socket_type = int;
+
+#ifndef IPV6_RECVPKTINFO
+#ifdef IPV6_PKTINFO
+#define IPV6_RECVPKTINFO IPV6_PKTINFO
+#endif
+#endif
+
+#ifndef IP_PKTINFO
+#ifdef IP_RECVDSTADDR
+#define IP_PKTINFO IP_RECVDSTADDR
+#endif
+#endif
+
 #endif
 
 #include <cstring>

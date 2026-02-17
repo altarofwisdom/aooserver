@@ -118,7 +118,11 @@ aoonet_server * aoonet_server_new(int port, int32_t *err) {
 
     // Request packet info for IPv4 too (on dual stack or IPv4 only)
     val = 1;
+#if defined(IP_PKTINFO)
     setsockopt(udpsocket, IPPROTO_IP, IP_PKTINFO, (char *)&val, sizeof(val));
+#elif defined(IP_RECVDSTADDR)
+    setsockopt(udpsocket, IPPROTO_IP, IP_RECVDSTADDR, (char *)&val, sizeof(val));
+#endif
 
     // set non-blocking
     // (this is not necessary on Windows, because WSAEventSelect will do it automatically)
@@ -871,18 +875,28 @@ void server::receive_udp(){
                         sa6.sin6_family = AF_INET6;
                         sa6.sin6_addr = pktinfo->ipi6_addr;
                         local_dest_addr = ip_address((struct sockaddr *)&sa6, sizeof(sa6));
-                    } else if (cmsg->cmsg_level == IPPROTO_IP && (cmsg->cmsg_type == IP_PKTINFO || cmsg->cmsg_type == IP_RECVDSTADDR)) {
-                        struct in_addr *addr_ptr;
+                    } else if (cmsg->cmsg_level == IPPROTO_IP) {
+                        struct in_addr addr4_val;
+                        bool found = false;
+#ifdef IP_PKTINFO
                         if (cmsg->cmsg_type == IP_PKTINFO) {
-                            addr_ptr = &((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr;
-                        } else {
-                            addr_ptr = (struct in_addr *)CMSG_DATA(cmsg);
+                            addr4_val = ((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr;
+                            found = true;
                         }
-                        struct sockaddr_in sa4;
-                        memset(&sa4, 0, sizeof(sa4));
-                        sa4.sin_family = AF_INET;
-                        sa4.sin_addr = *addr_ptr;
-                        local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
+#endif
+#ifdef IP_RECVDSTADDR
+                        if (!found && cmsg->cmsg_type == IP_RECVDSTADDR) {
+                            addr4_val = *(struct in_addr *)CMSG_DATA(cmsg);
+                            found = true;
+                        }
+#endif
+                        if (found) {
+                            struct sockaddr_in sa4;
+                            memset(&sa4, 0, sizeof(sa4));
+                            sa4.sin_family = AF_INET;
+                            sa4.sin_addr = addr4_val;
+                            local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
+                        }
                     }
                 }
             } else {
@@ -1017,11 +1031,18 @@ void server::send_udp_message(const char *msg, int32_t size,
     } else if (source_addr.family() == AF_INET) {
         struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
         cmsg->cmsg_level = IPPROTO_IP;
+#if defined(IP_PKTINFO)
         cmsg->cmsg_type = IP_PKTINFO;
         cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
         struct in_pktinfo *pktinfo = (struct in_pktinfo *)CMSG_DATA(cmsg);
         pktinfo->ipi_addr = ((struct sockaddr_in *)&source_addr.address)->sin_addr;
         pktinfo->ipi_ifindex = 0;
+#elif defined(IP_SENDSRCADDR)
+        cmsg->cmsg_type = IP_SENDSRCADDR;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_addr));
+        struct in_addr *srcaddr = (struct in_addr *)CMSG_DATA(cmsg);
+        *srcaddr = ((struct sockaddr_in *)&source_addr.address)->sin_addr;
+#endif
         message.msg_controllen = cmsg->cmsg_len;
     }
 
