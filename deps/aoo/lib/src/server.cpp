@@ -7,6 +7,7 @@
 #include <functional>
 #include <algorithm>
 #include <random>
+#include <sstream>
 
 #define AOONET_MSG_CLIENT_PING \
     AOO_MSG_DOMAIN AOONET_MSG_CLIENT AOONET_MSG_PING
@@ -87,6 +88,20 @@ char * copy_string(const char * s);
 
 } // net
 } // aoo
+
+namespace {
+
+std::string format_ip_address_debug(const aoo::net::ip_address& addr) {
+    std::ostringstream os;
+    os << addr.name() << ":" << addr.port() << " fam=" << addr.family();
+    if (aoo::net::ip_address::is_ipv6_family(addr.family())) {
+        auto sa6 = reinterpret_cast<const struct sockaddr_in6*>(&addr.address);
+        os << " scope=" << sa6->sin6_scope_id;
+    }
+    return os.str();
+}
+
+}
 
 /*//////////////////// AoO server /////////////////////*/
 
@@ -1500,6 +1515,11 @@ void client_endpoint::handle_login(const osc::ReceivedMessage& msg)
     if (ctoken) {
         token = ctoken;
     }
+
+    ip_address server_local_addr;
+    server_local_addr.length = sizeof(server_local_addr.address);
+    bool has_server_local_addr = getsockname(socket, (struct sockaddr *)&server_local_addr.address,
+                                             &server_local_addr.length) == 0;
     
     server::error err;
     if (!user_){
@@ -1514,6 +1534,20 @@ void client_endpoint::handle_login(const osc::ReceivedMessage& msg)
                         << "username: " << username << ", password: " << password
                         << ", public IP: " << public_ip << ", public port: " << public_port
                         << ", local IP: " << local_ip << ", local port: " << local_port << ", token: " << token);
+            LOG_VERBOSE("aoo_server: login endpoint context user=" << username
+                        << " tcp_remote=" << format_ip_address_debug(addr_)
+                        << " tcp_local=" << (has_server_local_addr ? format_ip_address_debug(server_local_addr) : std::string("<unknown>"))
+                        << " reported_public=" << format_ip_address_debug(public_address)
+                        << " reported_local=" << format_ip_address_debug(local_address));
+            if (has_server_local_addr && server_local_addr.port() > 0 &&
+                (public_port == server_local_addr.port() || local_port == server_local_addr.port())){
+                LOG_WARNING("aoo_server: suspicious login endpoints for user=" << username
+                            << " reported_public=" << format_ip_address_debug(public_address)
+                            << " reported_local=" << format_ip_address_debug(local_address)
+                            << " matches_server_port=" << server_local_addr.port()
+                            << " tcp_remote=" << format_ip_address_debug(addr_)
+                            << " token=" << token);
+            }
 
             result = 1;
 
