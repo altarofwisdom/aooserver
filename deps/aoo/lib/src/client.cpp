@@ -879,7 +879,17 @@ void client::do_group_watch_public(bool watch){
 
 void client::send_message_udp(const char *data, int32_t size, const ip_address& addr)
 {
-    sendfn_(udpsocket_, data, size, (void *)&addr.address);
+    auto result = sendfn_(udpsocket_, data, size, (void *)&addr.address);
+    if (result < 0){
+        static std::atomic<uint64_t> udp_send_error_logs{0};
+        auto nlog = ++udp_send_error_logs;
+        if (nlog <= 50 || (nlog % 50) == 0){
+            LOG_WARNING("aoo_client: UDP send failed result=" << result
+                        << " size=" << size
+                        << " dest=" << addr.name() << ":" << addr.port()
+                        << " family=" << addr.family());
+        }
+    }
 }
 
 void client::push_event(std::unique_ptr<ievent> e)
