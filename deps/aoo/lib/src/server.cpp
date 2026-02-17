@@ -795,25 +795,22 @@ void server::receive_udp(){
         return;
     }
 
-#ifdef _WIN32
-    static LPFN_WSARECVMSG fp_WSARecvMsg = NULL;
-    if (!fp_WSARecvMsg) {
-        GUID guid = WSAID_WSARECVMSG;
-        DWORD bytes = 0;
-        WSAIoctl(udpsocket_, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
-                 &fp_WSARecvMsg, sizeof(fp_WSARecvMsg), &bytes, NULL, NULL);
-    }
-#endif
-
     // read as much data as possible until recv() would block
     while (true){
         char buf[AOO_MAXPACKETSIZE];
         ip_address addr;
         ip_address local_dest_addr;
-
         int32_t result = -1;
 
 #ifdef _WIN32
+        static LPFN_WSARECVMSG fp_WSARecvMsg = NULL;
+        if (!fp_WSARecvMsg) {
+            GUID guid = WSAID_WSARECVMSG;
+            DWORD bytes = 0;
+            WSAIoctl(udpsocket_, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
+                     &fp_WSARecvMsg, sizeof(fp_WSARecvMsg), &bytes, NULL, NULL);
+        }
+
         if (fp_WSARecvMsg) {
             WSABUF wsaBuf;
             wsaBuf.buf = buf;
@@ -837,14 +834,14 @@ void server::receive_udp(){
                 // Extract local destination address
                 for (WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg); cmsg != NULL; cmsg = WSA_CMSG_NXTHDR(&wsaMsg, cmsg)) {
                     if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
-                        struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)WSA_CMSG_DATA(cmsg);
+                        IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
                         struct sockaddr_in6 sa6;
                         memset(&sa6, 0, sizeof(sa6));
                         sa6.sin6_family = AF_INET6;
                         sa6.sin6_addr = pktinfo->ipi6_addr;
                         local_dest_addr = ip_address((struct sockaddr *)&sa6, sizeof(sa6));
                     } else if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
-                        struct in_pktinfo *pktinfo = (struct in_pktinfo *)WSA_CMSG_DATA(cmsg);
+                        IN_PKTINFO *pktinfo = (IN_PKTINFO *)WSA_CMSG_DATA(cmsg);
                         struct sockaddr_in sa4;
                         memset(&sa4, 0, sizeof(sa4));
                         sa4.sin_family = AF_INET;
@@ -860,65 +857,74 @@ void server::receive_udp(){
                 return;
             }
         } else {
-#endif
-            struct msghdr msg;
-            struct iovec iov[1];
-            char control[1024];
-            iov[0].iov_base = buf;
-            iov[0].iov_len = sizeof(buf);
-            memset(&msg, 0, sizeof(msg));
-            msg.msg_name = &addr.address;
-            msg.msg_namelen = sizeof(addr.address);
-            msg.msg_iov = iov;
-            msg.msg_iovlen = 1;
-            msg.msg_control = control;
-            msg.msg_controllen = sizeof(control);
-
-            ssize_t n = recvmsg(udpsocket_, &msg, 0);
-            if (n >= 0) {
-                result = (int32_t)n;
-                addr.length = msg.msg_namelen;
-
-                for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
-                    if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
-                        struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
-                        struct sockaddr_in6 sa6;
-                        memset(&sa6, 0, sizeof(sa6));
-                        sa6.sin6_family = AF_INET6;
-                        sa6.sin6_addr = pktinfo->ipi6_addr;
-                        local_dest_addr = ip_address((struct sockaddr *)&sa6, sizeof(sa6));
-                    } else if (cmsg->cmsg_level == IPPROTO_IP) {
-                        struct in_addr addr4_val;
-                        bool found = false;
-#ifdef IP_PKTINFO
-                        if (cmsg->cmsg_type == IP_PKTINFO) {
-                            addr4_val = ((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr;
-                            found = true;
-                        }
-#endif
-#ifdef IP_RECVDSTADDR
-                        if (!found && cmsg->cmsg_type == IP_RECVDSTADDR) {
-                            addr4_val = *(struct in_addr *)CMSG_DATA(cmsg);
-                            found = true;
-                        }
-#endif
-                        if (found) {
-                            struct sockaddr_in sa4;
-                            memset(&sa4, 0, sizeof(sa4));
-                            sa4.sin_family = AF_INET;
-                            sa4.sin_addr = addr4_val;
-                            local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
-                        }
-                    }
-                }
-            } else {
+            // Fallback to recvfrom if WSARecvMsg extension is somehow missing
+            result = recvfrom(udpsocket_, buf, sizeof(buf), 0,
+                               (struct sockaddr *)&addr.address, &addr.length);
+            if (result < 0) {
                 int err = socket_errno();
-                if (err != EWOULDBLOCK && err != EAGAIN) {
-                    LOG_ERROR("aoo_server: recvmsg failed (" << err << ")");
+                if (err != WSAEWOULDBLOCK) {
+                    LOG_ERROR("aoo_server: recvfrom failed (" << err << ")");
                 }
                 return;
             }
-#ifdef _WIN32
+        }
+#else
+        struct msghdr msg;
+        struct iovec iov[1];
+        char control[1024];
+        iov[0].iov_base = buf;
+        iov[0].iov_len = sizeof(buf);
+        memset(&msg, 0, sizeof(msg));
+        msg.msg_name = &addr.address;
+        msg.msg_namelen = sizeof(addr.address);
+        msg.msg_iov = iov;
+        msg.msg_iovlen = 1;
+        msg.msg_control = control;
+        msg.msg_controllen = sizeof(control);
+
+        ssize_t n = recvmsg(udpsocket_, &msg, 0);
+        if (n >= 0) {
+            result = (int32_t)n;
+            addr.length = msg.msg_namelen;
+
+            for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
+                    struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
+                    struct sockaddr_in6 sa6;
+                    memset(&sa6, 0, sizeof(sa6));
+                    sa6.sin6_family = AF_INET6;
+                    sa6.sin6_addr = pktinfo->ipi6_addr;
+                    local_dest_addr = ip_address((struct sockaddr *)&sa6, sizeof(sa6));
+                } else if (cmsg->cmsg_level == IPPROTO_IP) {
+                    struct in_addr addr4_val;
+                    bool found = false;
+#ifdef IP_PKTINFO
+                    if (cmsg->cmsg_type == IP_PKTINFO) {
+                        addr4_val = ((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr;
+                        found = true;
+                    }
+#endif
+#ifdef IP_RECVDSTADDR
+                    if (!found && cmsg->cmsg_type == IP_RECVDSTADDR) {
+                        addr4_val = *(struct in_addr *)CMSG_DATA(cmsg);
+                        found = true;
+                    }
+#endif
+                    if (found) {
+                        struct sockaddr_in sa4;
+                        memset(&sa4, 0, sizeof(sa4));
+                        sa4.sin_family = AF_INET;
+                        sa4.sin_addr = addr4_val;
+                        local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
+                    }
+                }
+            }
+        } else {
+            int err = socket_errno();
+            if (err != EWOULDBLOCK && err != EAGAIN) {
+                LOG_ERROR("aoo_server: recvmsg failed (" << err << ")");
+            }
+            return;
         }
 #endif
 
@@ -994,8 +1000,8 @@ void server::send_udp_message(const char *msg, int32_t size,
             WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
             cmsg->cmsg_level = IPPROTO_IPV6;
             cmsg->cmsg_type = IPV6_PKTINFO;
-            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(struct in6_pktinfo));
-            struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)WSA_CMSG_DATA(cmsg);
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
+            IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
             pktinfo->ipi6_addr = ((struct sockaddr_in6 *)&source_addr.address)->sin6_addr;
             pktinfo->ipi6_ifindex = 0;
             wsaMsg.Control.len = cmsg->cmsg_len;
@@ -1003,8 +1009,8 @@ void server::send_udp_message(const char *msg, int32_t size,
             WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
             cmsg->cmsg_level = IPPROTO_IP;
             cmsg->cmsg_type = IP_PKTINFO;
-            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(struct in_pktinfo));
-            struct in_pktinfo *pktinfo = (struct in_pktinfo *)WSA_CMSG_DATA(cmsg);
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN_PKTINFO));
+            IN_PKTINFO *pktinfo = (IN_PKTINFO *)WSA_CMSG_DATA(cmsg);
             pktinfo->ipi_addr = ((struct sockaddr_in *)&source_addr.address)->sin_addr;
             pktinfo->ipi_ifindex = 0;
             wsaMsg.Control.len = cmsg->cmsg_len;
@@ -1015,6 +1021,15 @@ void server::send_udp_message(const char *msg, int32_t size,
             int err = WSAGetLastError();
             if (err != WSAEWOULDBLOCK) {
                 LOG_ERROR("aoo_server: WSASendMsg failed (" << err << ")");
+            }
+        }
+    } else {
+        auto result = ::sendto(udpsocket_, msg, size, 0,
+                              (struct sockaddr *)&addr.address, addr.length);
+        if (result < 0){
+            int err = socket_errno();
+            if (err != EWOULDBLOCK) {
+                LOG_ERROR("aoo_server: sendto fallback failed (" << err << ")");
             }
         }
     }
