@@ -222,10 +222,10 @@ private:
     void receive_udp();
 
     void send_udp_message(const char *msg, int32_t size,
-                          const ip_address& addr);
+                          const ip_address& addr, const ip_address& source_addr = ip_address());
 
     void handle_udp_message(const osc::ReceivedMessage& msg, int onset,
-                            const ip_address& addr);
+                            const ip_address& addr, const ip_address& local_addr);
 
     void signal();
 

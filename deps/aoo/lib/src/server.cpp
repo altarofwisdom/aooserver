@@ -49,6 +49,10 @@
     AOONET_MSG_GROUP AOONET_MSG_PUBLIC
 
 
+#ifdef _WIN32
+#include <mswsock.h>
+#endif
+
 namespace aoo {
 namespace net {
 
@@ -106,7 +110,15 @@ aoonet_server * aoonet_server_new(int port, int32_t *err) {
                 return nullptr;
             }
         }
+
+        // Request packet info to get destination address of incoming packets
+        val = 1;
+        setsockopt(udpsocket, IPPROTO_IPV6, IPV6_RECVPKTINFO, (char *)&val, sizeof(val));
     }
+
+    // Request packet info for IPv4 too (on dual stack or IPv4 only)
+    val = 1;
+    setsockopt(udpsocket, IPPROTO_IP, IP_PKTINFO, (char *)&val, sizeof(val));
 
     // set non-blocking
     // (this is not necessary on Windows, because WSAEventSelect will do it automatically)
@@ -766,12 +778,124 @@ void server::receive_udp(){
     if (udpsocket_ < 0){
         return;
     }
+
+#ifdef _WIN32
+    static LPFN_WSARECVMSG fp_WSARecvMsg = NULL;
+    if (!fp_WSARecvMsg) {
+        GUID guid = WSAID_WSARECVMSG;
+        DWORD bytes = 0;
+        WSAIoctl(udpsocket_, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
+                 &fp_WSARecvMsg, sizeof(fp_WSARecvMsg), &bytes, NULL, NULL);
+    }
+#endif
+
     // read as much data as possible until recv() would block
     while (true){
         char buf[AOO_MAXPACKETSIZE];
         ip_address addr;
-        int32_t result = recvfrom(udpsocket_, buf, sizeof(buf), 0,
-                               (struct sockaddr *)&addr.address, &addr.length);
+        ip_address local_dest_addr;
+
+        int32_t result = -1;
+
+#ifdef _WIN32
+        if (fp_WSARecvMsg) {
+            WSABUF wsaBuf;
+            wsaBuf.buf = buf;
+            wsaBuf.len = sizeof(buf);
+
+            WSAMSG wsaMsg;
+            memset(&wsaMsg, 0, sizeof(wsaMsg));
+            wsaMsg.name = (LPSOCKADDR)&addr.address;
+            wsaMsg.namelen = sizeof(addr.address);
+            wsaMsg.lpBuffers = &wsaBuf;
+            wsaMsg.dwBufferCount = 1;
+            char controlBuf[1024];
+            wsaMsg.Control.buf = controlBuf;
+            wsaMsg.Control.len = sizeof(controlBuf);
+
+            DWORD bytesReceived = 0;
+            if (fp_WSARecvMsg(udpsocket_, &wsaMsg, &bytesReceived, NULL, NULL) == 0) {
+                result = (int32_t)bytesReceived;
+                addr.length = wsaMsg.namelen;
+
+                // Extract local destination address
+                for (WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg); cmsg != NULL; cmsg = WSA_CMSG_NXTHHDR(&wsaMsg, cmsg)) {
+                    if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
+                        IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
+                        struct sockaddr_in6 sa6;
+                        memset(&sa6, 0, sizeof(sa6));
+                        sa6.sin6_family = AF_INET6;
+                        sa6.sin6_addr = pktinfo->ipi6_addr;
+                        local_dest_addr = ip_address((struct sockaddr *)&sa6, sizeof(sa6));
+                    } else if (cmsg->cmsg_level == IPPROTO_IP && cmsg->cmsg_type == IP_PKTINFO) {
+                        IN_PKTINFO *pktinfo = (IN_PKTINFO *)WSA_CMSG_DATA(cmsg);
+                        struct sockaddr_in sa4;
+                        memset(&sa4, 0, sizeof(sa4));
+                        sa4.sin_family = AF_INET;
+                        sa4.sin_addr = pktinfo->ipi_addr;
+                        local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
+                    }
+                }
+            } else {
+                int err = WSAGetLastError();
+                if (err != WSAEWOULDBLOCK) {
+                    LOG_ERROR("aoo_server: WSARecvMsg failed (" << err << ")");
+                }
+                return;
+            }
+        } else {
+#endif
+            struct msghdr msg;
+            struct iovec iov[1];
+            char control[1024];
+            iov[0].iov_base = buf;
+            iov[0].iov_len = sizeof(buf);
+            memset(&msg, 0, sizeof(msg));
+            msg.msg_name = &addr.address;
+            msg.msg_namelen = sizeof(addr.address);
+            msg.msg_iov = iov;
+            msg.msg_iovlen = 1;
+            msg.msg_control = control;
+            msg.msg_controllen = sizeof(control);
+
+            ssize_t n = recvmsg(udpsocket_, &msg, 0);
+            if (n >= 0) {
+                result = (int32_t)n;
+                addr.length = msg.msg_namelen;
+
+                for (struct cmsghdr *cmsg = CMSG_FIRSTHDR(&msg); cmsg != NULL; cmsg = CMSG_NXTHDR(&msg, cmsg)) {
+                    if (cmsg->cmsg_level == IPPROTO_IPV6 && cmsg->cmsg_type == IPV6_PKTINFO) {
+                        struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
+                        struct sockaddr_in6 sa6;
+                        memset(&sa6, 0, sizeof(sa6));
+                        sa6.sin6_family = AF_INET6;
+                        sa6.sin6_addr = pktinfo->ipi6_addr;
+                        local_dest_addr = ip_address((struct sockaddr *)&sa6, sizeof(sa6));
+                    } else if (cmsg->cmsg_level == IPPROTO_IP && (cmsg->cmsg_type == IP_PKTINFO || cmsg->cmsg_type == IP_RECVDSTADDR)) {
+                        struct in_addr *addr_ptr;
+                        if (cmsg->cmsg_type == IP_PKTINFO) {
+                            addr_ptr = &((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr;
+                        } else {
+                            addr_ptr = (struct in_addr *)CMSG_DATA(cmsg);
+                        }
+                        struct sockaddr_in sa4;
+                        memset(&sa4, 0, sizeof(sa4));
+                        sa4.sin_family = AF_INET;
+                        sa4.sin_addr = *addr_ptr;
+                        local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
+                    }
+                }
+            } else {
+                int err = socket_errno();
+                if (err != EWOULDBLOCK && err != EAGAIN) {
+                    LOG_ERROR("aoo_server: recvmsg failed (" << err << ")");
+                }
+                return;
+            }
+#ifdef _WIN32
+        }
+#endif
+
         if (result > 0){
             try {
                 osc::ReceivedPacket packet(buf, result);
@@ -781,63 +905,137 @@ void server::receive_udp(){
                 auto onset = aoonet_parse_pattern(buf, result, &type);
                 if (!onset){
                     LOG_WARNING("aoo_server: not an AOO NET message!");
-                    return;
+                    continue;
                 }
 
                 if (type != AOO_TYPE_SERVER){
                     LOG_WARNING("aoo_server: not a client message!");
-                    return;
+                    continue;
                 }
 
-                handle_udp_message(msg, onset, addr);
+                handle_udp_message(msg, onset, addr, local_dest_addr);
             } catch (const osc::Exception& e){
                 LOG_ERROR("aoo_server: exception in receive_udp: " << e.what());
             }
-        } else if (result < 0){
-            int err = socket_errno();
-        #ifdef _WIN32
-            if (err == WSAEWOULDBLOCK)
-        #else
-            if (err == EWOULDBLOCK)
-        #endif
-            {
-            #if 0
-                LOG_VERBOSE("aoo_server: recv() would block");
-            #endif
-            }
-            else
-            {
-                // TODO handle error
-                LOG_ERROR("aoo_server: recv() failed (" << err << ")");
-            }
+        } else if (result == 0) {
             return;
         }
     }
 }
 
 void server::send_udp_message(const char *msg, int32_t size,
-                              const ip_address &addr)
+                              const ip_address &addr, const ip_address &source_addr)
 {
-    auto result = ::sendto(udpsocket_, msg, size, 0,
-                          (struct sockaddr *)&addr.address, addr.length);
-    if (result < 0){
-        int err = socket_errno();
-    #ifdef _WIN32
-        if (err != WSAEWOULDBLOCK)
-    #else
-        if (err != EWOULDBLOCK)
-    #endif
-        {
-            // TODO handle error
-            LOG_ERROR("aoo_server: send() failed (" << err << ")");
-        } else {
-            LOG_VERBOSE("aoo_server: send() would block");
+    if (source_addr.family() == AF_UNSPEC) {
+        auto result = ::sendto(udpsocket_, msg, size, 0,
+                              (struct sockaddr *)&addr.address, addr.length);
+        if (result < 0){
+            int err = socket_errno();
+            if (err != EWOULDBLOCK && err != EAGAIN) {
+                LOG_ERROR("aoo_server: sendto failed (" << err << ")");
+            }
+        }
+        return;
+    }
+
+#ifdef _WIN32
+    static LPFN_WSASENDMSG fp_WSASendMsg = NULL;
+    if (!fp_WSASendMsg) {
+        GUID guid = WSAID_WSASENDMSG;
+        DWORD bytes = 0;
+        WSAIoctl(udpsocket_, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
+                 &fp_WSASendMsg, sizeof(fp_WSASendMsg), &bytes, NULL, NULL);
+    }
+
+    if (fp_WSASendMsg) {
+        WSABUF wsaBuf;
+        wsaBuf.buf = (char *)msg;
+        wsaBuf.len = size;
+
+        WSAMSG wsaMsg;
+        memset(&wsaMsg, 0, sizeof(wsaMsg));
+        wsaMsg.name = (LPSOCKADDR)&addr.address;
+        wsaMsg.namelen = addr.length;
+        wsaMsg.lpBuffers = &wsaBuf;
+        wsaMsg.dwBufferCount = 1;
+
+        char control[1024];
+        wsaMsg.Control.buf = control;
+        wsaMsg.Control.len = 0;
+
+        if (source_addr.family() == AF_INET6) {
+            WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
+            cmsg->cmsg_level = IPPROTO_IPV6;
+            cmsg->cmsg_type = IPV6_PKTINFO;
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
+            IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
+            pktinfo->ipi6_addr = ((struct sockaddr_in6 *)&source_addr.address)->sin6_addr;
+            pktinfo->ipi6_ifindex = 0;
+            wsaMsg.Control.len = cmsg->cmsg_len;
+        } else if (source_addr.family() == AF_INET) {
+            WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
+            cmsg->cmsg_level = IPPROTO_IP;
+            cmsg->cmsg_type = IP_PKTINFO;
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN_PKTINFO));
+            IN_PKTINFO *pktinfo = (IN_PKTINFO *)WSA_CMSG_DATA(cmsg);
+            pktinfo->ipi_addr = ((struct sockaddr_in *)&source_addr.address)->sin_addr;
+            pktinfo->ipi_ifindex = 0;
+            wsaMsg.Control.len = cmsg->cmsg_len;
+        }
+
+        DWORD bytesSent;
+        if (fp_WSASendMsg(udpsocket_, &wsaMsg, 0, &bytesSent, NULL, NULL) == SOCKET_ERROR) {
+            int err = WSAGetLastError();
+            if (err != WSAEWOULDBLOCK) {
+                LOG_ERROR("aoo_server: WSASendMsg failed (" << err << ")");
+            }
         }
     }
+#else
+    struct msghdr message;
+    struct iovec iov[1];
+    char control[1024];
+    iov[0].iov_base = (void *)msg;
+    iov[0].iov_len = size;
+    memset(&message, 0, sizeof(message));
+    message.msg_name = (void *)&addr.address;
+    message.msg_namelen = addr.length;
+    message.msg_iov = iov;
+    message.msg_iovlen = 1;
+    message.msg_control = control;
+    message.msg_controllen = 0;
+
+    if (source_addr.family() == AF_INET6) {
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+        cmsg->cmsg_level = IPPROTO_IPV6;
+        cmsg->cmsg_type = IPV6_PKTINFO;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
+        struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
+        pktinfo->ipi6_addr = ((struct sockaddr_in6 *)&source_addr.address)->sin6_addr;
+        pktinfo->ipi6_ifindex = 0;
+        message.msg_controllen = cmsg->cmsg_len;
+    } else if (source_addr.family() == AF_INET) {
+        struct cmsghdr *cmsg = CMSG_FIRSTHDR(&message);
+        cmsg->cmsg_level = IPPROTO_IP;
+        cmsg->cmsg_type = IP_PKTINFO;
+        cmsg->cmsg_len = CMSG_LEN(sizeof(struct in_pktinfo));
+        struct in_pktinfo *pktinfo = (struct in_pktinfo *)CMSG_DATA(cmsg);
+        pktinfo->ipi_addr = ((struct sockaddr_in *)&source_addr.address)->sin_addr;
+        pktinfo->ipi_ifindex = 0;
+        message.msg_controllen = cmsg->cmsg_len;
+    }
+
+    if (sendmsg(udpsocket_, &message, 0) < 0) {
+        int err = socket_errno();
+        if (err != EWOULDBLOCK && err != EAGAIN) {
+            LOG_ERROR("aoo_server: sendmsg failed (" << err << ")");
+        }
+    }
+#endif
 }
 
 void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
-                                const ip_address& addr)
+                                const ip_address& addr, const ip_address& local_addr)
 {
     auto pattern = msg.AddressPattern() + onset;
     LOG_DEBUG("aoo_server: handle client UDP message " << pattern);
@@ -850,7 +1048,7 @@ void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
             reply << osc::BeginMessage(AOONET_MSG_CLIENT_PING)
                   << osc::EndMessage;
 
-            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr);
+            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr, local_addr);
         } else if (!strcmp(pattern, AOONET_MSG_REQUEST)){
             // reply with /reply message
             char buf[512];
@@ -858,7 +1056,7 @@ void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
             reply << osc::BeginMessage(AOONET_MSG_CLIENT_REPLY)
                   << addr.name().c_str() << addr.port() << osc::EndMessage;
 
-            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr);
+            send_udp_message(reply.Data(), (int32_t) reply.Size(), addr, local_addr);
         } else {
             LOG_ERROR("aoo_server: unknown message " << pattern);
         }
