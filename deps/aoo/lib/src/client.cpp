@@ -416,12 +416,7 @@ int32_t aoo::net::client::handle_message(const char *data, int32_t n, void *addr
             handle_server_message_udp(msg, onset);
             return 1;
         } else {
-            // peer message
-            if (type != AOO_TYPE_PEER){
-                LOG_WARNING("aoo_client: not a peer message!");
-                // allow fallthrough for debugging?
-            }
-            
+            // peer message or server message from mismatched address
             bool success = false;
             {
                 shared_lock lock(peerlock_);
@@ -435,16 +430,19 @@ int32_t aoo::net::client::handle_message(const char *data, int32_t n, void *addr
                     if (p->match(address)){
                         p->handle_message(msg, onset, address);
                         success = true;
-                    } else if (!p->has_real_address() && token > 0 && p->match_token(token)) {
+                    } else if (token > 0 && p->match_token(token)) {
                         // this message doesn't match one of the addresses given by the server for this peer
                         // but it DOES match the random token for the peer, which means we might be dealing
-                        // with a symmetric NAT for that peer. so we will assign the address here as the *real* address
+                        // with a symmetric NAT or IPv6 privacy address for that peer.
+                        // assign the address here as the *real* address
 
-                        LOG_VERBOSE("aoo_client: found matching token, changing public address for endpoint "
-                                    << p->address().name() << ":" << p->address().port() << " TO "
-                                    << address.name() << ":" << address.port());
+                        if (!(p->address() == address)) {
+                            LOG_VERBOSE("aoo_client: found matching token, updating address for endpoint "
+                                        << p->address().name() << ":" << p->address().port() << " TO "
+                                        << address.name() << ":" << address.port());
 
-                        p->set_public_address(address);
+                            p->set_public_address(address);
+                        }
                         p->handle_message(msg, onset, address);
                         success = true;
                     }
@@ -462,6 +460,10 @@ int32_t aoo::net::client::handle_message(const char *data, int32_t n, void *addr
                  }
                  
                  LOG_WARNING("aoo_client: received SERVER message from MISMATCHED address. Expected: " << remote_addr_.name() << ":" << remote_addr_.port() << " Got: " << address.name() << ":" << address.port());
+                 
+                 // Update remote address to actual UDP source
+                 remote_addr_ = address;
+
                  // Try to handle it anyway
                  handle_server_message_udp(msg, onset);
                  return 1;
