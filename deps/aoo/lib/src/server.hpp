@@ -24,6 +24,12 @@ namespace net {
 
 class server;
 
+#ifdef _WIN32
+    using socket_type = SOCKET;
+#else
+    using socket_type = int;
+#endif
+
 struct user;
 using user_list = std::vector<std::shared_ptr<user>>;
 
@@ -34,26 +40,23 @@ using group_list = std::vector<std::shared_ptr<group>>;
 class client_endpoint {
     server *server_;
 public:
-    client_endpoint(server &s, int sock, const ip_address& addr, const ip_address& local_addr);
+    client_endpoint(server &s, socket_type sock, const ip_address& addr);
     ~client_endpoint();
 
     void close(bool notify=true);
 
-    bool is_active() const { return socket >= 0; }
-
-    const ip_address& get_remote_address() const { return addr_; }
+    bool is_active() const { return socket != (socket_type)-1; }
 
     void send_message(const char *msg, int32_t);
 
     bool receive_data();
 
-    int socket = -1;
+    socket_type socket = (socket_type)-1;
 #ifdef _WIN32
     HANDLE event;
 #endif
     ip_address public_address;
     ip_address local_address;
-    ip_address server_local_address;
     int64_t token;
 private:
     std::shared_ptr<user> user_;
@@ -148,7 +151,7 @@ public:
         };
     };
 
-    server(int tcpsocket, int udpsocket);
+    server(socket_type tcpsocket, socket_type udpsocket);
     ~server();
 
     int32_t run() override;
@@ -185,17 +188,10 @@ public:
     void on_public_group_modified(group& grp);
     void on_public_group_removed(group& grp);
 
-    void add_blocked_address(const std::string & ipaddr, bool public_only=false) override;
-    bool is_address_blocked(const std::string & ipaddr) const override;
-    bool is_address_blocked_public(const std::string & ipaddr) const override;
-
-
-    bool is_address_blocked(const ip_address & otheripaddr) const;
-
 
 private:
-    int tcpsocket_;
-    int udpsocket_;
+    socket_type tcpsocket_;
+    socket_type udpsocket_;
 #ifdef _WIN32
     HANDLE tcpevent_;
     HANDLE udpevent_;
@@ -219,13 +215,6 @@ private:
     int waitpipe_[2];
 #endif
 
-    struct blockaddress_item {
-        blockaddress_item(const ip_address & ipaddr, bool publiconly) : addr(ipaddr), public_only(publiconly) {}
-        ip_address addr;
-        bool public_only;
-    };
-    std::vector<blockaddress_item> blocked_addrs_;
-
     void wait_for_event();
 
     void update();
@@ -234,9 +223,6 @@ private:
 
     void send_udp_message(const char *msg, int32_t size,
                           const ip_address& addr);
-
-    void send_udp_message(const char *msg, int32_t size,
-                          const ip_address& addr, const ip_address& source_addr);
 
     void handle_udp_message(const osc::ReceivedMessage& msg, int onset,
                             const ip_address& addr);

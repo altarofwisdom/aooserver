@@ -7,7 +7,6 @@
 #include "aoo_net.h"
 
 #include <memory>
-#include <string>
 
 namespace aoo {
 namespace net {
@@ -70,13 +69,6 @@ public:
 
     // get number of currently active users
     virtual int32_t get_user_count() const = 0;
-
-    // add IP address to refuse as a client connection
-    virtual void add_blocked_address(const std::string & ipaddr, bool public_only=false) = 0;
-
-    // check if IP address is blocked
-    virtual bool is_address_blocked(const std::string & ipaddr) const = 0;
-    virtual bool is_address_blocked_public(const std::string & ipaddr) const = 0;
 
 protected:
     ~iserver(){} // non-virtual!

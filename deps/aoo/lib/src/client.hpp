@@ -167,7 +167,7 @@ private:
     void *udpsocket_;
     aoo_sendfn sendfn_;
     int udpport_;
-    int tcpsocket_ = -1;
+    socket_type tcpsocket_ = (socket_type)-1;
     ip_address remote_addr_;
     ip_address public_addr_;
     ip_address local_addr_;

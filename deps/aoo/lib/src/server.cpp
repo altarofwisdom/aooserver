@@ -8,10 +8,6 @@
 #include <algorithm>
 #include <random>
 
-#ifdef _WIN32
-#include <mswsock.h>
-#endif
-
 #define AOONET_MSG_CLIENT_PING \
     AOO_MSG_DOMAIN AOONET_MSG_CLIENT AOONET_MSG_PING
 
@@ -223,7 +219,7 @@ aoonet_server * aoonet_server_new(int port, int32_t *err) {
     return new aoo::net::server(tcpsocket, udpsocket);
 }
 
-aoo::net::server::server(int tcpsocket, int udpsocket)
+aoo::net::server::server(socket_type tcpsocket, socket_type udpsocket)
     : tcpsocket_(tcpsocket), udpsocket_(udpsocket)
 {
 #ifdef _WIN32
@@ -395,51 +391,6 @@ std::shared_ptr<user> server::find_user(const std::string& name)
     return nullptr;
 }
 
-void server::add_blocked_address(const std::string & ipaddr, bool public_only)
-{
-    ip_address addr(ipaddr, 0);
-    blockaddress_item item(addr, public_only);
-    blocked_addrs_.push_back(item);
-}
-
-bool server::is_address_blocked(const std::string & otherip) const
-{
-    // match names only (ignore ports)
-    for (auto& item : blocked_addrs_){
-        if (item.addr.name() == otherip && !item.public_only){
-            return true;
-        }
-    }
-
-    return false;
-}
-
-bool server::is_address_blocked_public(const std::string & otherip) const
-{
-    // match names only (ignore ports)
-    for (auto& item : blocked_addrs_){
-        if (item.addr.name() == otherip && item.public_only){
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
-bool server::is_address_blocked(const ip_address & otheripaddr) const
-{
-    // match names only (ignore ports)
-    for (auto& item : blocked_addrs_){
-        if (item.addr.name() == otheripaddr.name() && !item.public_only){
-            return true;
-        }
-    }
-
-    return false;
-}
-
-
 std::shared_ptr<group> server::get_group(const std::string& name,
                                          const std::string& pwd,
                                          bool is_public,
@@ -570,7 +521,6 @@ void server::on_user_left_group(user& usr, group& grp){
 }
 
 void server::on_user_wants_public_groups(user& usr){
-
     // 1) send all existing public groups to the user
     for (auto& grp : groups_){
         if (!grp->is_public) continue;
@@ -656,25 +606,9 @@ void server::wait_for_event(){
                 ip_address addr;
                 auto sock = accept(tcpsocket_, (struct sockaddr *)&addr.address, &addr.length);
                 if (sock != INVALID_SOCKET){
-                    // check block list and refuse connection from blocked addresses
-                    if (!is_address_blocked(addr)) {
-                        ip_address local_addr;
-                        if (getsockname(sock, (struct sockaddr *)&local_addr.address, &local_addr.length) != 0) {
-                            LOG_ERROR("aoo_server: getsockname failed (" << socket_errno() << ")");
-                        } else {
-                            // If it's an IPv4-mapped IPv6 address, convert to IPv4? 
-                            // Usually better to keep as is if socket is dual stack.
-                        }
-                        
-                        clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr, local_addr));
-                        LOG_VERBOSE("aoo_server: accepted client (IP: "
-                                    << addr.name() << ", port: " << addr.port() << ")");
-                    }
-                    else {
-                        LOG_WARNING("aoo_server: refused blocked address (IP: "
-                                    << addr.name() << ", port: " << addr.port() << ")");
-                        socket_close(sock);
-                    }
+                    clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr));
+                    LOG_VERBOSE("aoo_server: accepted client (IP: "
+                                << addr.name() << ", port: " << addr.port() << ")");
                 } else {
                     int err = socket_errno();
                     if (err != WSAEWOULDBLOCK){
@@ -765,20 +699,9 @@ void server::wait_for_event(){
             ip_address addr;
             int sock = accept(tcpsocket_, (struct sockaddr *)&addr.address, &addr.length);
             if (sock >= 0){
-                if (!is_address_blocked(addr)) {
-                    ip_address local_addr;
-                    if (getsockname(sock, (struct sockaddr *)&local_addr.address, &local_addr.length) != 0) {
-                        LOG_ERROR("aoo_server: getsockname failed (" << socket_errno() << ")");
-                    }
-
-                    clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr, local_addr));
-                    LOG_VERBOSE("aoo_server: accepted client (IP: "
-                                << addr.name() << ", port: " << addr.port() << ")");
-                } else {
-                    LOG_WARNING("aoo_server: refused blocked address (IP: "
-                                << addr.name() << ", port: " << addr.port() << ")");
-                    socket_close(sock);
-                }
+                clients_.push_back(std::make_unique<client_endpoint>(*this, sock, addr));
+                LOG_VERBOSE("aoo_server: accepted client (IP: "
+                            << addr.name() << ", port: " << addr.port() << ")");
             } else {
                 int err = socket_errno();
                 if (err != EWOULDBLOCK){
@@ -850,7 +773,6 @@ void server::receive_udp(){
         int32_t result = recvfrom(udpsocket_, buf, sizeof(buf), 0,
                                (struct sockaddr *)&addr.address, &addr.length);
         if (result > 0){
-            LOG_WARNING("aoo_server: received UDP " << result << " bytes from " << addr.name() << ":" << addr.port());
             try {
                 osc::ReceivedPacket packet(buf, result);
                 osc::ReceivedMessage msg(packet);
@@ -896,7 +818,6 @@ void server::receive_udp(){
 void server::send_udp_message(const char *msg, int32_t size,
                               const ip_address &addr)
 {
-    LOG_DEBUG("aoo_server: sending UDP " << size << " bytes to " << addr.name() << ":" << addr.port());
     auto result = ::sendto(udpsocket_, msg, size, 0,
                           (struct sockaddr *)&addr.address, addr.length);
     if (result < 0){
@@ -913,118 +834,6 @@ void server::send_udp_message(const char *msg, int32_t size,
             LOG_VERBOSE("aoo_server: send() would block");
         }
     }
-}
-
-void server::send_udp_message(const char *msg, int32_t size,
-                              const ip_address &addr, const ip_address& source_addr)
-{
-    if (source_addr.length == 0) {
-        send_udp_message(msg, size, addr);
-        return;
-    }
-
-#ifdef _WIN32
-    static LPFN_WSASENDMSG fp_WSASendMsg = NULL;
-    if (!fp_WSASendMsg) {
-        GUID guid = WSAID_WSASENDMSG;
-        DWORD bytes = 0;
-        WSAIoctl(udpsocket_, SIO_GET_EXTENSION_FUNCTION_POINTER, &guid, sizeof(guid),
-                 &fp_WSASendMsg, sizeof(fp_WSASendMsg), &bytes, NULL, NULL);
-    }
-
-    if (!fp_WSASendMsg) {
-        LOG_ERROR("aoo_server: couldn't get WSASendMsg extension function");
-        send_udp_message(msg, size, addr);
-        return;
-    }
-
-    WSABUF wsaBuf;
-    wsaBuf.buf = (char *)msg;
-    wsaBuf.len = size;
-
-    WSAMSG wsaMsg;
-    memset(&wsaMsg, 0, sizeof(wsaMsg));
-    wsaMsg.name = (LPSOCKADDR)&addr.address;
-    wsaMsg.namelen = addr.length;
-    wsaMsg.lpBuffers = &wsaBuf;
-    wsaMsg.dwBufferCount = 1;
-
-    char controlBuf[1024];
-    wsaMsg.Control.buf = controlBuf;
-    wsaMsg.Control.len = sizeof(controlBuf);
-
-    WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
-
-    cmsg->cmsg_level = IPPROTO_IPV6;
-    cmsg->cmsg_type = IPV6_PKTINFO;
-    cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
-
-    IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
-    
-    // Assume IPv6 dual stack
-    if (source_addr.family() == AF_INET6) {
-        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&source_addr.address;
-        pktinfo->ipi6_addr = sin6->sin6_addr;
-    } else {
-        // Map IPv4 to IPv6
-        ip_address mapped = source_addr.to_ipv6_mapped();
-        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&mapped.address;
-        pktinfo->ipi6_addr = sin6->sin6_addr;
-    }
-    pktinfo->ipi6_ifindex = 0;
-
-    wsaMsg.Control.len = cmsg->cmsg_len;
-
-    DWORD bytesSent;
-    if (fp_WSASendMsg(udpsocket_, &wsaMsg, 0, &bytesSent, NULL, NULL) == SOCKET_ERROR) {
-        int err = WSAGetLastError();
-        if (err != WSAEWOULDBLOCK) {
-            LOG_ERROR("aoo_server: WSASendMsg failed (" << err << ")");
-        }
-    }
-#else
-    struct msghdr message;
-    struct iovec iov[1];
-    struct cmsghdr *cmsg;
-    char cmsgbuf[CMSG_SPACE(sizeof(struct in6_pktinfo))];
-
-    iov[0].iov_base = (void *)msg;
-    iov[0].iov_len = size;
-
-    memset(&message, 0, sizeof(message));
-    message.msg_name = (void *)&addr.address;
-    message.msg_namelen = addr.length;
-    message.msg_iov = iov;
-    message.msg_iovlen = 1;
-    message.msg_control = cmsgbuf;
-    message.msg_controllen = sizeof(cmsgbuf);
-
-    cmsg = CMSG_FIRSTHDR(&message);
-    cmsg->cmsg_level = IPPROTO_IPV6;
-    cmsg->cmsg_type = IPV6_PKTINFO;
-    cmsg->cmsg_len = CMSG_LEN(sizeof(struct in6_pktinfo));
-
-    struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)CMSG_DATA(cmsg);
-    
-    if (source_addr.family() == AF_INET6) {
-        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&source_addr.address;
-        pktinfo->ipi6_addr = sin6->sin6_addr;
-    } else {
-        ip_address mapped = source_addr.to_ipv6_mapped(); 
-        const struct sockaddr_in6 *sin6 = (const struct sockaddr_in6 *)&mapped.address;
-        pktinfo->ipi6_addr = sin6->sin6_addr;
-    }
-    pktinfo->ipi6_ifindex = 0;
-
-    message.msg_controllen = cmsg->cmsg_len;
-
-    if (sendmsg(udpsocket_, &message, 0) < 0) {
-        int err = socket_errno();
-        if (err != EWOULDBLOCK) {
-             LOG_ERROR("aoo_server: sendmsg failed (" << err << ")");
-        }
-    }
-#endif
 }
 
 void server::handle_udp_message(const osc::ReceivedMessage &msg, int onset,
@@ -1133,8 +942,8 @@ bool group::remove_user(const user& usr){
 
 /*///////////////////////// client_endpoint /////////////////////////////*/
 
-client_endpoint::client_endpoint(server &s, int sock, const ip_address &addr, const ip_address &local_addr)
-    : server_(&s), socket(sock), addr_(addr), server_local_address(local_addr)
+client_endpoint::client_endpoint(server &s, socket_type sock, const ip_address &addr)
+    : server_(&s), socket(sock), addr_(addr)
 {
     int val = 0;
     // NOTE: on POSIX systems, the socket returned by accept() does *not*
@@ -1472,23 +1281,17 @@ void client_endpoint::handle_group_join(const osc::ReceivedMessage& msg)
 
     server::error err;
     if (user_){
-        // do not allow public group blocked user to join/create public group
-        if (is_public && server_->is_address_blocked_public(user_->endpoint->public_address.name())) {
-            errmsg = "cannot create public group";
-        }
-        else {
-            auto grp = server_->get_group(name, password, is_public, err);
-            if (grp){
-                if (user_->add_group(grp)){
-                    grp->add_user(user_);
-                    server_->on_user_joined_group(*user_, *grp);
-                    result = 1;
-                } else {
-                    errmsg = "already a group member";
-                }
+        auto grp = server_->get_group(name, password, is_public, err);
+        if (grp){
+            if (user_->add_group(grp)){
+                grp->add_user(user_);
+                server_->on_user_joined_group(*user_, *grp);
+                result = 1;
             } else {
-                errmsg = server::error_to_string(err);
+                errmsg = "already a group member";
             }
+        } else {
+            errmsg = server::error_to_string(err);
         }
     } else {
         errmsg = "not logged in";
@@ -1546,15 +1349,6 @@ void client_endpoint::handle_group_public(const osc::ReceivedMessage& msg)
 
     server::error err;
     if (user_){
-
-        // check if blocked for public groups
-
-        if (server_->is_address_blocked_public(user_->endpoint->public_address.name())) {
-            shouldWatch = false;
-            LOG_WARNING("aoo_server: refused public group request for blocked address (IP: "
-                        << user_->endpoint->public_address.name() << ")");
-        }
-
         // register interest in seeing public groups
         user_->watch_public_groups = shouldWatch;
 
