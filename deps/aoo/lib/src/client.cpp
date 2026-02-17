@@ -459,7 +459,7 @@ int32_t aoo::net::client::handle_message(const char *data, int32_t n, void *addr
                      return 1;
                  }
                  
-                 LOG_WARNING("aoo_client: received SERVER message from MISMATCHED address. Expected: " << remote_addr_.name() << ":" << remote_addr_.port() << " Got: " << address.name() << ":" << address.port());
+                 LOG_VERBOSE("aoo_client: received SERVER message from MISMATCHED address. Expected: " << remote_addr_.name() << ":" << remote_addr_.port() << " Got: " << address.name() << ":" << address.port());
                  
                  // Update remote address to actual UDP source
                  remote_addr_ = address;
