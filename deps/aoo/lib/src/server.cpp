@@ -65,6 +65,15 @@
 # endif
 #endif
 
+// Ensure IPV6_RECVPKTINFO is defined
+#ifndef IPV6_RECVPKTINFO
+# ifdef IPV6_PKTINFO
+#  define IPV6_RECVPKTINFO IPV6_PKTINFO
+# else
+#  define IPV6_RECVPKTINFO 19
+# endif
+#endif
+
 namespace aoo {
 namespace net {
 
