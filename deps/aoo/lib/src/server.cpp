@@ -896,27 +896,25 @@ void server::receive_udp(){
                     sa6.sin6_addr = pktinfo->ipi6_addr;
                     local_dest_addr = ip_address((struct sockaddr *)&sa6, sizeof(sa6));
                 } else if (cmsg->cmsg_level == IPPROTO_IP) {
-                    struct in_addr addr4_val;
-                    bool found = false;
-#ifdef IP_PKTINFO
+#if defined(IP_PKTINFO)
                     if (cmsg->cmsg_type == IP_PKTINFO) {
-                        addr4_val = ((struct in_pktinfo *)CMSG_DATA(cmsg))->ipi_addr;
-                        found = true;
-                    }
-#endif
-#ifdef IP_RECVDSTADDR
-                    if (!found && cmsg->cmsg_type == IP_RECVDSTADDR) {
-                        addr4_val = *(struct in_addr *)CMSG_DATA(cmsg);
-                        found = true;
-                    }
-#endif
-                    if (found) {
+                        struct in_pktinfo *pktinfo = (struct in_pktinfo *)CMSG_DATA(cmsg);
                         struct sockaddr_in sa4;
                         memset(&sa4, 0, sizeof(sa4));
                         sa4.sin_family = AF_INET;
-                        sa4.sin_addr = addr4_val;
+                        sa4.sin_addr = pktinfo->ipi_addr;
                         local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
                     }
+#elif defined(IP_RECVDSTADDR)
+                    if (cmsg->cmsg_type == IP_RECVDSTADDR) {
+                        struct in_addr *addr_ptr = (struct in_addr *)CMSG_DATA(cmsg);
+                        struct sockaddr_in sa4;
+                        memset(&sa4, 0, sizeof(sa4));
+                        sa4.sin_family = AF_INET;
+                        sa4.sin_addr = *addr_ptr;
+                        local_dest_addr = ip_address((struct sockaddr *)&sa4, sizeof(sa4));
+                    }
+#endif
                 }
             }
         } else {
@@ -1000,8 +998,8 @@ void server::send_udp_message(const char *msg, int32_t size,
             WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
             cmsg->cmsg_level = IPPROTO_IPV6;
             cmsg->cmsg_type = IPV6_PKTINFO;
-            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
-            IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(struct in6_pktinfo));
+            struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)WSA_CMSG_DATA(cmsg);
             pktinfo->ipi6_addr = ((struct sockaddr_in6 *)&source_addr.address)->sin6_addr;
             pktinfo->ipi6_ifindex = 0;
             wsaMsg.Control.len = cmsg->cmsg_len;
@@ -1009,8 +1007,8 @@ void server::send_udp_message(const char *msg, int32_t size,
             WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
             cmsg->cmsg_level = IPPROTO_IP;
             cmsg->cmsg_type = IP_PKTINFO;
-            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN_PKTINFO));
-            IN_PKTINFO *pktinfo = (IN_PKTINFO *)WSA_CMSG_DATA(cmsg);
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(struct in_pktinfo));
+            struct in_pktinfo *pktinfo = (struct in_pktinfo *)WSA_CMSG_DATA(cmsg);
             pktinfo->ipi_addr = ((struct sockaddr_in *)&source_addr.address)->sin_addr;
             pktinfo->ipi_ifindex = 0;
             wsaMsg.Control.len = cmsg->cmsg_len;
