@@ -998,8 +998,8 @@ void server::send_udp_message(const char *msg, int32_t size,
             WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
             cmsg->cmsg_level = IPPROTO_IPV6;
             cmsg->cmsg_type = IPV6_PKTINFO;
-            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(struct in6_pktinfo));
-            struct in6_pktinfo *pktinfo = (struct in6_pktinfo *)WSA_CMSG_DATA(cmsg);
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN6_PKTINFO));
+            IN6_PKTINFO *pktinfo = (IN6_PKTINFO *)WSA_CMSG_DATA(cmsg);
             pktinfo->ipi6_addr = ((struct sockaddr_in6 *)&source_addr.address)->sin6_addr;
             pktinfo->ipi6_ifindex = 0;
             wsaMsg.Control.len = cmsg->cmsg_len;
@@ -1007,8 +1007,8 @@ void server::send_udp_message(const char *msg, int32_t size,
             WSACMSGHDR *cmsg = WSA_CMSG_FIRSTHDR(&wsaMsg);
             cmsg->cmsg_level = IPPROTO_IP;
             cmsg->cmsg_type = IP_PKTINFO;
-            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(struct in_pktinfo));
-            struct in_pktinfo *pktinfo = (struct in_pktinfo *)WSA_CMSG_DATA(cmsg);
+            cmsg->cmsg_len = WSA_CMSG_LEN(sizeof(IN_PKTINFO));
+            IN_PKTINFO *pktinfo = (IN_PKTINFO *)WSA_CMSG_DATA(cmsg);
             pktinfo->ipi_addr = ((struct sockaddr_in *)&source_addr.address)->sin_addr;
             pktinfo->ipi_ifindex = 0;
             wsaMsg.Control.len = cmsg->cmsg_len;
