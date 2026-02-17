@@ -65,13 +65,19 @@
 # endif
 #endif
 
-// Ensure IPV6_RECVPKTINFO is defined
-#ifndef IPV6_RECVPKTINFO
-# ifdef IPV6_PKTINFO
-#  define IPV6_RECVPKTINFO IPV6_PKTINFO
+// Ensure IPV6_PKTINFO and IPV6_RECVPKTINFO are defined
+#ifndef IPV6_PKTINFO
+# ifdef IPV6_RECVPKTINFO
+#  define IPV6_PKTINFO IPV6_RECVPKTINFO
+# elif defined(__APPLE__)
+#  define IPV6_PKTINFO 46
 # else
-#  define IPV6_RECVPKTINFO 19
+#  define IPV6_PKTINFO 50
 # endif
+#endif
+
+#ifndef IPV6_RECVPKTINFO
+# define IPV6_RECVPKTINFO IPV6_PKTINFO
 #endif
 
 namespace aoo {
