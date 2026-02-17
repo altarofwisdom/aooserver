@@ -47,6 +47,8 @@ public:
 
     bool is_active() const { return socket != (socket_type)-1; }
 
+    user* get_user() const { return user_.get(); }
+
     void send_message(const char *msg, int32_t);
 
     bool receive_data();
@@ -57,7 +59,7 @@ public:
 #endif
     ip_address public_address;
     ip_address local_address;
-    int64_t token;
+    int64_t token = 0;
 private:
     std::shared_ptr<user> user_;
     ip_address addr_;

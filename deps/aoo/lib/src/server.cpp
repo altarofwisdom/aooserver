@@ -508,6 +508,14 @@ void server::on_user_joined_group(user& usr, group& grp){
 
             auto notify = [&](client_endpoint* dest, user& u){
                 auto e = u.endpoint;
+                auto d = dest->get_user();
+
+                LOG_VERBOSE("aoo_server: peer announce group=" << grp.name
+                            << " from_user=" << u.name
+                            << " to_user=" << (d ? d->name : "<unknown>")
+                            << " public=" << e->public_address.name() << ":" << e->public_address.port()
+                            << " local=" << e->local_address.name() << ":" << e->local_address.port()
+                            << " token=" << e->token);
 
                 osc::OutboundPacketStream msg(buf, sizeof(buf));
                 msg << osc::BeginMessage(AOONET_MSG_CLIENT_PEER_JOIN)
