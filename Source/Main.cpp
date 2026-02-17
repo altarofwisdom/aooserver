@@ -108,9 +108,9 @@ public:
                     publiconly = tokens[1].equalsIgnoreCase("public");
                 }
 
-                mServer->add_blocked_address(ipaddr.toStdString(), publiconly);
+                // mServer->add_blocked_address(ipaddr.toStdString(), publiconly);
 
-                String msg; msg << "AddBlockedIP," << ipaddr << "," << (publiconly ? "public_only" : "all");
+                String msg; msg << "AddBlockedIP_Skipped," << ipaddr << "," << (publiconly ? "public_only" : "all");
                 logEvent(msg);
             }
         }
